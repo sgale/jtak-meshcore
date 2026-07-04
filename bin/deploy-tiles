@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# jTAK tile sync — push cached tiles (and optionally manifests) to one or more hubs.
+# Tiles merge into the target's existing store — no deletions, no conflicts.
+#
+# Usage:
+#   /opt/jtak/bin/deploy-tiles tak1
+#   /opt/jtak/bin/deploy-tiles tak3
+#   /opt/jtak/bin/deploy-tiles tak1 tak3
+#   /opt/jtak/bin/deploy-tiles tak1 tak3 --no-manifests
+
+set -euo pipefail
+
+declare -A HUB_HOSTS=(
+  [tak1]="192.168.86.21"
+  [tak2]="192.168.86.40"
+  [tak3]="192.168.86.23"
+  [tak4]="192.168.86.41"
+)
+
+TILE_DIR="/opt/jtak/data/tilecache/tiles"
+MANIFEST_DIR="/opt/jtak/data/tilecache/manifests"
+
+SYNC_MANIFESTS=true
+TARGETS=()
+
+for arg in "$@"; do
+  if [[ "$arg" == "--no-manifests" ]]; then
+    SYNC_MANIFESTS=false
+  else
+    TARGETS+=("$arg")
+  fi
+done
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+  echo "Usage: deploy-tiles <tak1|tak2|tak3> [tak1|tak2|tak3 ...] [--no-manifests]"
+  exit 1
+fi
+
+# Count local tiles for display
+TILE_COUNT=$(find "$TILE_DIR" -name "*.png" 2>/dev/null | wc -l)
+TILE_SIZE=$(du -sh "$TILE_DIR" 2>/dev/null | cut -f1)
+echo "Local tile store: ${TILE_COUNT} tiles (${TILE_SIZE})"
+echo ""
+
+for target in "${TARGETS[@]}"; do
+  HOST="${HUB_HOSTS[$target]:-}"
+  if [[ -z "$HOST" ]]; then
+    echo "Unknown target: $target (valid: tak1 tak2 tak3 tak4)"
+    exit 1
+  fi
+
+  echo "▶ Syncing tiles to $target ($HOST)..."
+
+  # Ensure target dirs exist
+  ssh "sdg@$HOST" "mkdir -p $TILE_DIR $MANIFEST_DIR"
+
+  # Sync tiles — additive only, no --delete (preserve tiles the target cached locally)
+  rsync -rlpt --progress \
+    "$TILE_DIR/" "sdg@$HOST:$TILE_DIR/"
+
+  if [[ "$SYNC_MANIFESTS" == true ]]; then
+    rsync -rlpt \
+      "$MANIFEST_DIR/" "sdg@$HOST:$MANIFEST_DIR/"
+    echo "  ✓ manifests synced"
+  fi
+
+  echo "✓ $target tiles synced"
+  echo ""
+done

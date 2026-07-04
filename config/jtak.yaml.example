@@ -1,0 +1,140 @@
+admin:
+  password: CHANGEME
+  username: admin
+anthropic:
+  api_key: CHANGEME
+api:
+  cors_origins:
+  - '*'
+  host: 0.0.0.0
+  port: 8420
+bme:
+  temp_offset_f: 0.0
+database:
+  path: /opt/jtak/data/jtak.db
+  retention_days_positions: 30
+  retention_days_rf_metrics: 30
+fire:
+  firms_api_key: CHANGEME
+  firms_bbox_deg: 3.5
+  firms_cache_min: 15
+  firms_days: 2
+  firms_modis: true
+  wfigs_cache_min: 30
+hq:
+  batch_size: 500
+  enabled: true
+  push_interval_sec: 60
+  sync_channels:
+  - 0
+  - 1
+  url: https://hq.jtak.club
+hub:
+  name: JTAK Hub 2
+  role: edge
+  short_name: HUB2
+hud:
+  chips:
+  - hub
+  - aircraft
+  - fire_data
+  - wind
+  - atmo
+  - hq_feed
+  - fire_spread
+  - ember_spot
+  - waypoint
+  - measure
+  - led_ctrl
+led:
+  brightness: 100
+  enabled: true
+  fire_radius_nm: 50
+  lora_event_ttl_sec: 2
+  low_disk_gb: 2
+  new_node_ttl_sec: 8
+  overtemp_c: 80
+  poll_interval_sec: 15
+logs:
+  base_path: /opt/jtak/logs/rf
+  rf_log_pattern: rf_log_*.csv
+map:
+  default_center:
+  - 40.5729
+  - -111.9941
+  default_zoom: 15
+  tile_source: osm
+mesh_devices:
+  node_49b3d0ac:
+    name: jTAK SKY Router 2
+    node_id: '!49b3d0ac'
+  node_6984e6a4:
+    name: jTAK Adam
+    node_id: '!6984e6a4'
+  router:
+    name: jTAK ROOF Router
+    node_id: '!49b3cc58'
+  sky_router:
+    name: jTAK SKY Router 1
+    node_id: '!b2a74c40'
+  tacoma:
+    name: jTAK Tacoma
+    node_id: '!6c72e6cc'
+meshtastic:
+  connection_type: tcp
+  debug: false
+  enabled: true
+  tcp_host: localhost
+  tcp_port: 4403
+opensky:
+  client_id: CHANGEME
+  client_secret: CHANGEME
+peers:
+  tak1:
+    name: JTAK Hub 1
+    node_id: '!4cc9f0c3'
+    zt_ip: 172.24.29.220
+  tak2:
+    name: JTAK Hub 2
+    node_id: '!4615e8b0'
+    zt_ip: 172.24.236.22
+  tak3:
+    name: jTAK Hub 3
+    node_id: '!34a6049d'
+    zt_ip: 172.24.136.116
+  tak4:
+    name: jTAK HUB 4
+    node_id: '!12b3078a'
+    zt_ip: 172.24.94.122
+  tak5:
+    name: JTAK Hub 5
+    node_id: '!16bff2e1'
+    zt_ip: 172.24.13.14
+posix_timezone: MST7MDT,M3.2.0,M11.1.0
+rabbitmq:
+  exchange: jtak.telemetry
+  host: 127.0.0.1
+  password: CHANGEME
+  port: 5672
+  queue_prefix: jtak
+  username: guest
+sidebar:
+  panels:
+  - zones
+  - waypoints
+  - nodes
+  - rf
+  - health
+  - sensors
+  - atmo
+  - weather
+  - tilecache
+  - mesh
+  - log
+sounds:
+  channel_message: ping
+  direct_message: chime
+  enabled: true
+  volume: 0.6
+  waypoint: drop
+timezone: America/Denver

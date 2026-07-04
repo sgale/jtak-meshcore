@@ -1,0 +1,269 @@
+#!/opt/jtak/venv/bin/python3
+"""
+rf-bakeoff — Active RF link quality test for jTAK mesh network.
+
+Sends unicast pings to each target node and records ACK rate, RTT, RSSI, and SNR.
+Nodes are resolved by long/short name from the live meshtasticd node table —
+no static ID config needed. T114s and other mesh nodes are included automatically
+when in range.
+
+Usage:
+  sudo /opt/jtak/bin/rf-bakeoff [options]
+
+Options:
+  --rounds N        Number of ping rounds per node (default: 10)
+  --interval S      Seconds between rounds (default: 15)
+  --timeout S       Seconds to wait for each ACK (default: 12)
+  --nodes NAME,...  Comma-separated node long or short names to test
+                    (default: all nodes currently in mesh node table)
+  --tag LABEL       Config tag label saved with results (default: from tag file)
+  --output FILE     CSV output path (default: /opt/jtak/data/rf_test_<tag>_<ts>.csv)
+  --host HOST       meshtasticd host (default: localhost)
+
+Examples:
+  sudo /opt/jtak/bin/rf-bakeoff
+  sudo /opt/jtak/bin/rf-bakeoff --rounds 20 --nodes "jTAK HUB 1,jTAK HUB 3"
+  sudo /opt/jtak/bin/rf-bakeoff --rounds 5 --tag rooftop-yagi --interval 10
+"""
+
+import argparse
+import csv
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import meshtastic.tcp_interface
+from pubsub import pub
+
+TAG_PATH    = Path("/opt/jtak/data/rf_config_tag.txt")
+RESULTS_DIR = Path("/opt/jtak/data")
+
+# ── Globals for pubsub callback ────────────────────────────────────────────────
+_ack_event    = threading.Event()
+_ack_data     = {}
+_waiting_for  = None   # node_id we're currently waiting on
+_iface        = None
+
+
+def _read_tag() -> str:
+    try:
+        return TAG_PATH.read_text().strip() or "untagged"
+    except FileNotFoundError:
+        return "untagged"
+
+
+def on_receive(packet, interface):
+    """pubsub callback — captures routing acks and RX RSSI/SNR."""
+    global _ack_data
+    from_id = packet.get("fromId")
+    decoded = packet.get("decoded", {})
+    portnum = decoded.get("portnum", 0)
+
+    # portnum 70 = ROUTING_APP (ack/nack)
+    if portnum == 70 and from_id == _waiting_for:
+        routing = decoded.get("routing", {})
+        err = routing.get("errorReason", "NONE")
+        _ack_data = {
+            "ack_received": err in ("NONE", 0, ""),
+            "rssi":         packet.get("rxRssi"),
+            "snr":          packet.get("rxSnr"),
+            "hop_count":    (packet.get("hopStart", 0) - packet.get("hopLimit", packet.get("hopStart", 0))),
+        }
+        _ack_event.set()
+
+
+def resolve_targets(iface, name_filter: list[str]) -> list[dict]:
+    """Return list of {id, long_name, short_name} for target nodes."""
+    my_id = iface.getMyUser().get("id")
+    targets = []
+    for node_id, node in (iface.nodes or {}).items():
+        if node_id == my_id:
+            continue
+        user       = node.get("user", {})
+        long_name  = user.get("longName", node_id)
+        short_name = user.get("shortName", "")
+        if name_filter:
+            match = any(
+                f.lower() in long_name.lower() or f.lower() in short_name.lower()
+                for f in name_filter
+            )
+            if not match:
+                continue
+        targets.append({"id": node_id, "long_name": long_name, "short_name": short_name})
+    return targets
+
+
+def ping_node(iface, node: dict, timeout: float) -> dict:
+    """Send one unicast ping, wait for ACK. Returns result dict."""
+    global _waiting_for, _ack_data, _ack_event
+    _waiting_for = node["id"]
+    _ack_data    = {}
+    _ack_event.clear()
+
+    sent_time = time.time()
+    try:
+        iface.sendText(
+            f"RF_TEST_{int(sent_time)}",
+            destinationId=node["id"],
+            wantAck=True,
+        )
+    except Exception as e:
+        return {"ack_received": False, "rtt_ms": None, "rssi": None, "snr": None,
+                "hop_count": None, "error": str(e)}
+
+    acked = _ack_event.wait(timeout=timeout)
+    rtt   = round((time.time() - sent_time) * 1000, 1) if acked else None
+
+    return {
+        "ack_received": acked and _ack_data.get("ack_received", True),
+        "rtt_ms":       rtt,
+        "rssi":         _ack_data.get("rssi"),
+        "snr":          _ack_data.get("snr"),
+        "hop_count":    _ack_data.get("hop_count"),
+        "error":        None,
+    }
+
+
+def print_summary(all_results: list[dict], targets: list[dict], tag: str, hub_name: str):
+    """Print a formatted results table to stdout."""
+    print()
+    print(f"  RF Bakeoff Results")
+    print(f"  Config tag : {tag}")
+    print(f"  Hub        : {hub_name}")
+    print(f"  Completed  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
+    hdr = f"  {'Node':<22} {'Sent':>5} {'ACKd':>5} {'PDR%':>6} {'RTT avg':>8} {'RTT min':>8} {'RTT max':>8} {'RSSI avg':>9} {'SNR avg':>8}"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+
+    for node in targets:
+        node_results = [r for r in all_results if r["target_id"] == node["id"]]
+        sent  = len(node_results)
+        acked = [r for r in node_results if r["ack_received"]]
+        pdr   = round(len(acked) / sent * 100, 1) if sent else 0
+        rtts  = [r["rtt_ms"] for r in acked if r["rtt_ms"] is not None]
+        rssis = [r["rssi"] for r in acked if r["rssi"] is not None]
+        snrs  = [r["snr"] for r in acked if r["snr"] is not None]
+        rtt_avg = f"{sum(rtts)/len(rtts):.0f}ms"   if rtts  else "—"
+        rtt_min = f"{min(rtts):.0f}ms"              if rtts  else "—"
+        rtt_max = f"{max(rtts):.0f}ms"              if rtts  else "—"
+        rssi_avg = f"{sum(rssis)/len(rssis):.1f}"   if rssis else "—"
+        snr_avg  = f"{sum(snrs)/len(snrs):.1f}"     if snrs  else "—"
+        name = node["long_name"][:22]
+        print(f"  {name:<22} {sent:>5} {len(acked):>5} {pdr:>5.1f}% {rtt_avg:>8} {rtt_min:>8} {rtt_max:>8} {rssi_avg:>8} dBm {snr_avg:>6} dB")
+
+    print()
+
+
+def main():
+    global _iface
+
+    parser = argparse.ArgumentParser(
+        description="jTAK active RF bakeoff — unicast ping test across mesh nodes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--rounds",   type=int,   default=10,         help="Ping rounds per node (default: 10)")
+    parser.add_argument("--interval", type=float, default=15.0,       help="Seconds between rounds (default: 15)")
+    parser.add_argument("--timeout",  type=float, default=12.0,       help="ACK wait timeout per ping (default: 12)")
+    parser.add_argument("--nodes",    type=str,   default="",         help="Comma-separated node names (default: all)")
+    parser.add_argument("--tag",      type=str,   default="",         help="Config tag label")
+    parser.add_argument("--output",   type=str,   default="",         help="CSV output path")
+    parser.add_argument("--host",     type=str,   default="localhost", help="meshtasticd host (default: localhost)")
+    args = parser.parse_args()
+
+    tag       = args.tag.strip() or _read_tag()
+    name_filter = [n.strip() for n in args.nodes.split(",") if n.strip()]
+    ts_str    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path  = Path(args.output) if args.output else RESULTS_DIR / f"rf_test_{tag}_{ts_str}.csv"
+
+    print(f"\n  Connecting to meshtasticd @ {args.host}...")
+    try:
+        _iface = meshtastic.tcp_interface.TCPInterface(hostname=args.host)
+    except Exception as e:
+        print(f"  ERROR: Could not connect to meshtasticd: {e}")
+        sys.exit(1)
+
+    pub.subscribe(on_receive, "meshtastic.receive")
+
+    hub_user = _iface.getMyUser()
+    hub_name = hub_user.get("longName", "Hub")
+    hub_id   = hub_user.get("id", "unknown")
+
+    targets = resolve_targets(_iface, name_filter)
+    if not targets:
+        print("  No target nodes found" + (f" matching: {name_filter}" if name_filter else " in mesh"))
+        _iface.close()
+        sys.exit(1)
+
+    print(f"  Hub      : {hub_name} ({hub_id})")
+    print(f"  Tag      : {tag}")
+    print(f"  Targets  : {', '.join(t['long_name'] for t in targets)}")
+    print(f"  Rounds   : {args.rounds}  |  Interval: {args.interval}s  |  Timeout: {args.timeout}s")
+    print(f"  Output   : {out_path}")
+    print()
+
+    FIELDNAMES = [
+        "timestamp", "config_tag", "hub_id", "hub_name",
+        "target_name", "target_id", "round",
+        "ack_received", "rtt_ms", "rssi", "snr", "hop_count", "error",
+    ]
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    all_results = []
+
+    with open(out_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+
+        for rnd in range(1, args.rounds + 1):
+            round_start = time.time()
+            print(f"  Round {rnd}/{args.rounds}", end="", flush=True)
+
+            for node in targets:
+                result = ping_node(_iface, node, args.timeout)
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                row = {
+                    "timestamp":    ts,
+                    "config_tag":   tag,
+                    "hub_id":       hub_id,
+                    "hub_name":     hub_name,
+                    "target_name":  node["long_name"],
+                    "target_id":    node["id"],
+                    "round":        rnd,
+                    **result,
+                }
+                all_results.append(row)
+                writer.writerow(row)
+                f.flush()
+
+                status = "✓" if result["ack_received"] else "✗"
+                rtt    = f"{result['rtt_ms']:.0f}ms" if result["rtt_ms"] else "—"
+                rssi   = f"{result['rssi']}dBm"       if result["rssi"]   else "—"
+                print(f"  {node['short_name'] or node['long_name']}: {status} {rtt} {rssi}", end="  ", flush=True)
+
+                # Brief gap between pings to the same node if multi-node round
+                if len(targets) > 1:
+                    time.sleep(1)
+
+            print()  # newline after round
+
+            # Wait out the interval (minus time already spent this round)
+            if rnd < args.rounds:
+                elapsed = time.time() - round_start
+                wait    = max(0, args.interval - elapsed)
+                if wait > 0:
+                    time.sleep(wait)
+
+    try:
+        _iface.close()
+    except Exception:
+        pass
+
+    print_summary(all_results, targets, tag, hub_name)
+    print(f"  Results saved → {out_path}\n")
+
+
+if __name__ == "__main__":
+    main()

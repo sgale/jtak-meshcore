@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Area Scanner — jTAK</title>
+  <link rel="stylesheet" href="/jtak/css/theme.css">
+  <style>
+    body { background: var(--bg, #0d1117); color: var(--fg, #e6edf3); font-family: monospace; margin: 0; }
+
+    .scanner-header {
+      background: var(--header-bg, #161b22);
+      border-bottom: 1px solid var(--border, #30363d);
+      padding: 10px 16px;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    .scanner-header h1 { margin: 0; font-size: 1rem; color: var(--accent, #58a6ff); }
+    .stat { font-size: 0.78rem; color: #8b949e; }
+    .stat span { color: #e6edf3; font-weight: bold; }
+    .badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 4px; margin-left: auto; }
+    .badge.running  { background: #1a4731; color: #3fb950; }
+    .badge.stopped  { background: #3d1f1f; color: #f85149; }
+    .badge.waiting  { background: #2d2a1f; color: #d29922; }
+
+    .refresh-bar {
+      font-size: 0.72rem; color: #8b949e;
+      padding: 4px 16px;
+      background: var(--header-bg, #161b22);
+      border-bottom: 1px solid var(--border, #30363d);
+    }
+    .refresh-bar span { color: #58a6ff; }
+
+    .panels { display: flex; flex-direction: column; gap: 0; }
+
+    .panel-title {
+      font-size: 0.75rem; font-weight: bold; color: #8b949e; text-transform: uppercase;
+      letter-spacing: 0.08em; padding: 8px 16px 4px;
+      border-bottom: 1px solid var(--border, #30363d);
+    }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th { text-align: left; padding: 6px 12px; color: #8b949e; font-weight: normal;
+         border-bottom: 1px solid #30363d; background: #0d1117; position: sticky; top: 0; }
+    td { padding: 5px 12px; border-bottom: 1px solid #1c2128; }
+    tr:hover td { background: #161b22; }
+
+    .rssi-great  { color: #3fb950; }
+    .rssi-good   { color: #7ee787; }
+    .rssi-ok     { color: #d29922; }
+    .rssi-weak   { color: #f0883e; }
+    .rssi-poor   { color: #f85149; }
+    .rssi-none   { color: #8b949e; }
+
+    .name-col  { font-weight: bold; }
+    .dim       { color: #8b949e; }
+    .mono      { font-family: monospace; }
+
+    .type-badge {
+      font-size: 0.68rem; padding: 1px 5px; border-radius: 3px;
+      background: #21262d; color: #8b949e;
+    }
+    .type-NODEINFO  { background: #1a3a5c; color: #58a6ff; }
+    .type-POSITION  { background: #1a4731; color: #3fb950; }
+    .type-TEXT      { background: #3d2a1f; color: #f0883e; }
+    .type-TELEMETRY { background: #2d1f3d; color: #bc8cff; }
+
+    .no-data { text-align: center; padding: 40px; color: #8b949e; font-style: italic; }
+
+    #node-table-wrap  { max-height: 55vh; overflow-y: auto; }
+    #packet-table-wrap { max-height: 35vh; overflow-y: auto; }
+  </style>
+</head>
+<body>
+
+<div class="scanner-header">
+  <h1>Area Scanner</h1>
+  <div class="stat">Preset: <span id="preset">—</span></div>
+  <div class="stat">Runtime: <span id="runtime">—</span></div>
+  <div class="stat">Packets: <span id="total">0</span></div>
+  <div class="stat">Nodes: <span id="node-count">0</span></div>
+  <div id="status-badge" class="badge waiting">Connecting…</div>
+</div>
+<div class="refresh-bar">
+  Auto-refresh every 30s &nbsp;|&nbsp; Next refresh in <span id="countdown">30</span>s
+  &nbsp;|&nbsp; <a href="#" onclick="loadData();return false;" style="color:#58a6ff">Refresh now</a>
+</div>
+
+<div class="panels">
+  <div class="panel-title">Heard Nodes</div>
+  <div id="node-table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Node ID</th><th>Name</th><th>Hardware</th>
+          <th>RSSI</th><th>SNR</th><th>Hops</th><th>Pkts</th>
+          <th>Last Seen</th><th>Position</th>
+        </tr>
+      </thead>
+      <tbody id="node-tbody"><tr><td colspan="9" class="no-data">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel-title" style="margin-top:8px">Recent Packets</div>
+  <div id="packet-table-wrap">
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Type</th><th>Node ID</th><th>Name</th><th>RSSI</th><th>SNR</th><th>Detail</th></tr>
+      </thead>
+      <tbody id="packet-tbody"><tr><td colspan="7" class="no-data">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const API = '/jtak/api/scanner';
+let _countdown = 30;
+let _timer;
+
+function rssiClass(rssi) {
+  if (rssi == null)  return 'rssi-none';
+  if (rssi >= -80)   return 'rssi-great';
+  if (rssi >= -95)   return 'rssi-good';
+  if (rssi >= -105)  return 'rssi-ok';
+  if (rssi >= -115)  return 'rssi-weak';
+  return 'rssi-poor';
+}
+
+function fmtAge(ts) {
+  if (!ts) return '—';
+  const age = Math.floor(Date.now()/1000 - ts);
+  if (age < 60)   return age + 's ago';
+  if (age < 3600) return Math.floor(age/60) + 'm ago';
+  return Math.floor(age/3600) + 'h ago';
+}
+
+function fmtRuntime(start) {
+  if (!start) return '—';
+  const s = Math.floor(Date.now()/1000 - start);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+
+function fmtPos(lat, lon) {
+  if (lat == null || lon == null) return '';
+  return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+}
+
+async function loadData() {
+  try {
+    const r = await fetch(API);
+    const d = await r.json();
+
+    document.getElementById('preset').textContent  = d.preset || '—';
+    document.getElementById('runtime').textContent = fmtRuntime(d.start_time);
+    document.getElementById('total').textContent   = d.total_packets || 0;
+
+    const nodes = d.nodes || [];
+    document.getElementById('node-count').textContent = nodes.length;
+
+    const badge = document.getElementById('status-badge');
+    if (!d.running && !d.updated) {
+      badge.className = 'badge stopped'; badge.textContent = 'Scanner offline';
+    } else if (!d.running) {
+      badge.className = 'badge stopped'; badge.textContent = 'Stale — scanner stopped?';
+    } else {
+      badge.className = 'badge running'; badge.textContent = 'Live';
+    }
+
+    // Node table — sorted by RSSI desc
+    const sorted = [...nodes].sort((a,b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+    const ntbody = document.getElementById('node-tbody');
+    if (!sorted.length) {
+      ntbody.innerHTML = '<tr><td colspan="9" class="no-data">No nodes heard yet — listening…</td></tr>';
+    } else {
+      ntbody.innerHTML = sorted.map(n => {
+        const rc = rssiClass(n.rssi);
+        const name = n.long_name || n.short_name || '???';
+        return `<tr>
+          <td class="mono dim">${n.node_id}</td>
+          <td class="name-col">${name}</td>
+          <td class="dim">${n.hardware || ''}</td>
+          <td class="${rc}">${n.rssi ?? '—'}</td>
+          <td class="dim">${n.snr != null ? n.snr.toFixed(1) : '—'}</td>
+          <td class="dim">${n.hops ?? '?'}</td>
+          <td>${n.pkt_count}</td>
+          <td class="dim">${fmtAge(n.last_seen)}</td>
+          <td class="dim">${fmtPos(n.lat, n.lon)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Packet log
+    const recent = d.recent || [];
+    const ptbody = document.getElementById('packet-tbody');
+    if (!recent.length) {
+      ptbody.innerHTML = '<tr><td colspan="7" class="no-data">No packets yet</td></tr>';
+    } else {
+      ptbody.innerHTML = recent.map(p => {
+        const rc  = rssiClass(p.rssi);
+        const pos = fmtPos(p.lat, p.lon);
+        const detail = pos || p.note || '';
+        return `<tr>
+          <td class="dim">${p.ts_str}</td>
+          <td><span class="type-badge type-${p.type}">${p.type}</span></td>
+          <td class="mono dim">${p.node_id}</td>
+          <td>${(p.name || '').substring(0,20)}</td>
+          <td class="${rc}">${p.rssi ?? '—'}</td>
+          <td class="dim">${p.snr != null ? p.snr.toFixed(1) : '—'}</td>
+          <td class="dim">${detail.substring(0,35)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+  } catch(e) {
+    document.getElementById('status-badge').className = 'badge stopped';
+    document.getElementById('status-badge').textContent = 'API error';
+  }
+
+  // Reset countdown
+  _countdown = 30;
+}
+
+function tick() {
+  _countdown--;
+  document.getElementById('countdown').textContent = _countdown;
+  if (_countdown <= 0) loadData();
+}
+
+loadData();
+_timer = setInterval(tick, 1000);
+</script>
+</body>
+</html>

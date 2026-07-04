@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+jTAK Push Agent — streams edge telemetry to HQ SensorThings ingest API.
+
+Runs as a daemon on each edge hub.  Reads from local SQLite, pushes batched
+observations to https://hq.jtak.club/api/v1/ingest, tracks watermarks locally.
+
+Config from /opt/jtak/config/jtak.yaml (hq: section) or environment:
+  JTAK_HQ_URL   — HQ base URL  (default: https://hq.jtak.club)
+  JTAK_HQ_KEY   — API key      (required if not in yaml)
+  JTAK_HUB_ID   — hub thing ID (default: hub-tak-2)
+"""
+
+import asyncio
+import json
+import logging
+import os
+import sqlite3
+import sys
+import time
+import uuid
+from pathlib import Path
+
+import httpx
+import yaml
+
+# ── Config ────────────────────────────────────────────────────────────────────
+BASE_DIR      = Path("/opt/jtak")
+DB_PATH       = BASE_DIR / "data" / "jtak.db"
+YAML_PATH     = BASE_DIR / "config" / "jtak.yaml"
+WATERMARK_FILE = BASE_DIR / "data" / "hq_watermarks.json"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [push-agent] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
+)
+log = logging.getLogger(__name__)
+
+def _load_config() -> dict:
+    cfg = {}
+    if YAML_PATH.exists():
+        with open(YAML_PATH) as f:
+            full = yaml.safe_load(f) or {}
+        cfg = full.get("hq", {})
+    return {
+        "url":               cfg.get("url", os.getenv("JTAK_HQ_URL", "https://hq.jtak.club")),
+        "push_token":        cfg.get("push_token", os.getenv("JTAK_HQ_KEY", "")),
+        "hub_id":            cfg.get("hub_id", os.getenv("JTAK_HUB_ID", "hub-tak-2")),
+        "push_interval_sec": int(cfg.get("push_interval_sec", 60)),
+        "batch_size":        int(cfg.get("batch_size", 500)),
+        "enabled":           cfg.get("enabled", True),
+    }
+
+# ── Watermarks ────────────────────────────────────────────────────────────────
+def _load_watermarks() -> dict:
+    if WATERMARK_FILE.exists():
+        try:
+            return json.loads(WATERMARK_FILE.read_text())
+        except Exception:
+            pass
+    return {"rf_metrics": 0, "positions": 0, "sensors": 0}
+
+def _save_watermarks(wm: dict):
+    WATERMARK_FILE.write_text(json.dumps(wm, indent=2))
+
+# ── SQLite helpers ────────────────────────────────────────────────────────────
+def _query(sql: str, params: tuple = ()) -> list:
+    try:
+        con = sqlite3.connect(str(DB_PATH), timeout=5)
+        con.row_factory = sqlite3.Row
+        rows = con.execute(sql, params).fetchall()
+        con.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        log.warning("SQLite query failed: %s", e)
+        return []
+
+# ── FOI mapping (node_id → HQ foi_id, from HQ init-handshake message) ─────────
+FOI_MAP = {
+    "!677811c9": "foi-hub-tak2",
+    "!4cc9f0c3": "foi-hub-tak1",
+    "!34a6049d": "foi-hub-tak3",
+    "!12b3078a": "foi-hub-tak4",
+    "!16bff2e1": "foi-hub-tak5",
+    "!7e9998e4": "foi-jacob",
+    "!79e5c9f2": "foi-sean",
+    "!a5fdd71b": "foi-adam",
+    "!22d6cda3": "foi-squints",
+    "!6c72e6cc": "foi-tacoma",
+}
+
+# ── Data mappers ──────────────────────────────────────────────────────────────
+def _clean_ts(ts) -> str | None:
+    """Return timestamp string if valid ISO-ish, else None (skip corrupt rows)."""
+    if not ts:
+        return None
+    s = str(ts)
+    if '\x00' in s or len(s.strip()) < 10:
+        return None
+    # Strip trailing garbage after the datetime portion
+    s = s.strip()
+    # Keep only the datetime prefix if extra junk appended
+    for i, c in enumerate(s):
+        if i > 25:
+            s = s[:i]
+            break
+    return s
+
+def _rf_to_observations(hub_id: str, rows: list, pos_lookup: dict | None = None) -> list:
+    """Map rf_metrics rows → multiple observations per row (one per datastream)."""
+    prefix = hub_id.replace("hub-tak-", "tak")  # hub-tak-2 → tak2
+    obs = []
+    for r in rows:
+        if not _clean_ts(r.get("timestamp")):
+            log.debug("Skipping row id=%s with corrupt timestamp", r.get("id"))
+            continue
+        ts    = _clean_ts(r["timestamp"])
+        src   = r["source_id"]
+        sname = r["source_name"] or src
+        params = {"source_node": src, "source_name": sname, "edge_id": r["id"]}
+        # Embed nearest node position so HQ uses inline coords, not GPS join
+        if pos_lookup and src in pos_lookup:
+            import bisect as _bisect
+            tl = pos_lookup[src]
+            if tl["times"]:
+                idx = _bisect.bisect_right(tl["times"], r["timestamp"]) - 1
+                if idx < 0:
+                    idx = 0
+                params["node_lat"] = tl["lats"][idx]
+                params["node_lon"] = tl["lons"][idx]
+                if tl["alts"][idx] is not None:
+                    params["node_alt_m"] = tl["alts"][idx]
+
+        foi = FOI_MAP.get(src)
+
+        def _o(ds_suffix, result):
+            if result is None:
+                return None
+            o = {
+                "datastream_id":  f"ds-{prefix}-{ds_suffix}",
+                "phenomenon_time": ts,
+                "result":         result,
+                "parameters":     params,
+            }
+            if foi:
+                o["foi_id"] = foi
+            return o
+
+        for o in [
+            _o("lora-rssi",    r.get("rssi")),
+            _o("lora-snr",     r.get("snr")),
+            _o("lora-hops",    r.get("hop_count")),
+            _o("lora-pathloss",r.get("path_loss_db")),
+            _o("lora-distance",r.get("distance_mi")),
+            _o("lora-bearing", r.get("bearing_deg")),
+            _o("channel-util", r.get("channel_util_pct")),
+            _o("air-util-tx",  r.get("air_util_tx_pct")),
+            _o("cpu-temp",     r.get("cpu_temp_c")),
+        ]:
+            if o is not None:
+                obs.append(o)
+    return obs
+
+def _pos_to_observations(hub_id: str, rows: list) -> list:
+    """Map positions rows → gps observations.  Only push hub own-ship if known."""
+    prefix = hub_id.replace("hub-tak-", "tak")
+    obs = []
+    for r in rows:
+        if not _clean_ts(r.get("timestamp")):
+            continue
+        if r.get("latitude") is None or r.get("longitude") is None:
+            continue
+        entry = {
+            "datastream_id":  f"ds-{prefix}-gps",
+            "phenomenon_time": r["timestamp"],
+            "result": {
+                "lat":   r["latitude"],
+                "lon":   r["longitude"],
+                "alt_m": r.get("altitude"),
+            },
+            "parameters": {
+                "source_node":  r["source_id"],
+                "source_name":  r.get("source_name", r["source_id"]),
+                "source_type":  r.get("source_type", ""),
+                "edge_id":      r["id"],
+            },
+        }
+        foi = FOI_MAP.get(r["source_id"])
+        if foi:
+            entry["foi_id"] = foi
+        obs.append(entry)
+    return obs
+
+# ── Push ──────────────────────────────────────────────────────────────────────
+async def _post_batch(client: httpx.AsyncClient, cfg: dict, observations: list) -> bool:
+    if not observations:
+        return True
+    payload = {
+        "hub_id":     cfg["hub_id"],
+        "batch_id":   f"batch-{uuid.uuid4().hex[:12]}",
+        "batch_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "observations": observations,
+    }
+    try:
+        r = await client.post(
+            f"{cfg['url']}/api/v1/ingest",
+            json=payload,
+            headers={"X-jTAK-Key": cfg["push_token"]},
+            timeout=15.0,
+        )
+        if r.status_code in (200, 202):
+            body = r.json()
+            log.info("HQ accepted %d / %d observations", body.get("accepted", "?"), len(observations))
+            return True
+        else:
+            log.warning("HQ ingest HTTP %d: %s", r.status_code, r.text[:200])
+            return False
+    except Exception as e:
+        log.warning("HQ ingest request failed: %s", e)
+        return False
+
+async def _push_cycle(cfg: dict):
+    wm = _load_watermarks()
+    batch_size = cfg["batch_size"]
+    hub_id = cfg["hub_id"]
+
+    async with httpx.AsyncClient() as client:
+
+        # ── RF metrics ───────────────────────────────────────────────────────
+        # Build position timeline for GPS embedding in RF observations
+        pos_raw = _query("SELECT source_id, timestamp, latitude, longitude, altitude "
+                         "FROM positions ORDER BY source_id, timestamp")
+        pos_lookup: dict = {}
+        for p in pos_raw:
+            sid = p["source_id"]
+            if sid not in pos_lookup:
+                pos_lookup[sid] = {"times": [], "lats": [], "lons": [], "alts": []}
+            pos_lookup[sid]["times"].append(p["timestamp"])
+            pos_lookup[sid]["lats"].append(p["latitude"])
+            pos_lookup[sid]["lons"].append(p["longitude"])
+            pos_lookup[sid]["alts"].append(p["altitude"])
+
+        rf_rows = _query(
+            "SELECT * FROM rf_metrics WHERE id > ? ORDER BY id LIMIT ?",
+            (wm["rf_metrics"], batch_size),
+        )
+        if rf_rows:
+            obs = _rf_to_observations(hub_id, rf_rows, pos_lookup)
+            if await _post_batch(client, cfg, obs):
+                wm["rf_metrics"] = rf_rows[-1]["id"]
+                _save_watermarks(wm)
+                log.info("RF watermark → %d (%d rows)", wm["rf_metrics"], len(rf_rows))
+
+        # ── Positions ────────────────────────────────────────────────────────
+        pos_rows = _query(
+            "SELECT * FROM positions WHERE id > ? ORDER BY id LIMIT ?",
+            (wm["positions"], batch_size),
+        )
+        if pos_rows:
+            obs = _pos_to_observations(hub_id, pos_rows)
+            if obs and await _post_batch(client, cfg, obs):
+                wm["positions"] = pos_rows[-1]["id"]
+                _save_watermarks(wm)
+                log.info("Position watermark → %d (%d rows)", wm["positions"], len(pos_rows))
+
+        # ── Sensors (BME680 etc.) ─────────────────────────────────────────────
+        # Sensors table maps to future datastreams; skipped until HQ has them
+        # sensor_rows = _query("SELECT * FROM sensors WHERE id > ? LIMIT ?", ...)
+
+# ── Heartbeat ─────────────────────────────────────────────────────────────────
+async def _heartbeat(client: httpx.AsyncClient, cfg: dict):
+    """Ping HQ /health and log round-trip — lightweight keep-alive."""
+    try:
+        r = await client.get(f"{cfg['url']}/health", timeout=5.0)
+        if r.status_code == 200:
+            log.debug("HQ heartbeat OK")
+        else:
+            log.warning("HQ heartbeat HTTP %d", r.status_code)
+    except Exception as e:
+        log.warning("HQ heartbeat failed: %s", e)
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+async def main():
+    cfg = _load_config()
+    if not cfg["enabled"]:
+        log.info("Push agent disabled in config — exiting")
+        return
+    if not cfg["push_token"]:
+        log.error("No push_token configured — set hq.push_token in jtak.yaml or JTAK_HQ_KEY env")
+        sys.exit(1)
+
+    log.info("Push agent starting — hub=%s  hq=%s  interval=%ds",
+             cfg["hub_id"], cfg["url"], cfg["push_interval_sec"])
+
+    interval = cfg["push_interval_sec"]
+    tick = 0
+
+    async with httpx.AsyncClient() as hb_client:
+        while True:
+            try:
+                if tick % 2 == 0:   # heartbeat every other cycle
+                    await _heartbeat(hb_client, cfg)
+                await _push_cycle(cfg)
+            except Exception as e:
+                log.error("Push cycle error: %s", e, exc_info=True)
+
+            tick += 1
+            await asyncio.sleep(interval)
+
+if __name__ == "__main__":
+    asyncio.run(main())

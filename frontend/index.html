@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jTAK — Joint Team Awareness Kit</title>
+  <link rel="icon" type="image/png" href="/jtak/assets/shield.png">
+
+  <!-- Barlow Condensed — local fallback first, Google Fonts if online -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Leaflet — vendored locally, no CDN required -->
+  <link rel="stylesheet" href="/jtak/vendor/leaflet.css">
+  <script src="/jtak/vendor/leaflet.js"></script>
+
+  <link rel="stylesheet" href="/jtak/css/jtak.css">
+  <!-- Flash prevention: apply theme before first paint -->
+  <script>(function(){var t=localStorage.getItem('jtak_theme');if(t==='day')document.documentElement.dataset.theme='day';})();</script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header id="header">
+    <img src="/jtak/assets/shield.png" class="logo" alt="">
+    <div class="brand-block">
+      <div class="brand"><span class="j">j</span><span class="tak">TAK</span></div>
+      <div class="subtitle">joint team awareness kit</div>
+    </div>
+
+    <nav class="tab-bar">
+      <a href="/jtak/" class="tab active"><span class="tab-icon">&#9679;</span> LIVE</a>
+      <a href="/jtak/history.html" class="tab"><span class="paw-icon">🐾</span> Tracks</a>
+      <a href="/jtak/iap.html" class="tab"><span class="tab-icon">🔥</span> Incidents</a>
+      <a href="/jtak/mesh-config.html" class="tab"><span class="tab-icon">&#128268;</span> Mesh</a>
+    </nav>
+
+    <div class="spacer"></div>
+
+    <!-- Right column: two rows stacked, top-aligned -->
+    <div id="hub-info">
+      <div id="hub-status">
+        <!-- Internet indicator — tucked in next to SAT/GPS -->
+        <div id="inet-indicator" style="display:none;" class="inet-indicator">
+          <span class="inet-globe">&#127760;</span>
+        </div>
+        <span id="sat-count" class="sat-count" title="GPS satellites in view">—</span>
+        <div id="conn-indicator" title="GPS / WebSocket status"></div>
+        <!-- Meshtastic debug toggle — only shown when meshtastic.debug: true in jtak.yaml -->
+        <div id="mesh-debug-wrap" style="display:none;align-items:center;gap:5px;" title="Stop mesh monitor so Meshtastic app can connect">
+          <label class="mesh-debug-toggle">
+            <input type="checkbox" id="mesh-debug-cb">
+            <div class="mesh-debug-track"><div class="mesh-debug-thumb"></div></div>
+            <span class="mesh-debug-label">APP</span>
+          </label>
+        </div>
+        <button id="sound-test-btn" class="theme-toggle-btn" title="Test notification sounds">🔔</button>
+        <button id="theme-toggle" class="theme-toggle-btn" title="Switch to Day mode">&#9728;</button>
+        <div id="clock">00:00:00 Z</div>
+      </div>
+      <div id="header-sub">
+        <span class="hs-name" id="hud-hub">—</span>
+        <span id="hud-zt-row" style="display:none"><span class="hs-label">ZT</span>&nbsp;<span id="hud-zt-ip" class="hs-val">—</span></span>
+        <span id="hud-guid-row" style="display:none"><span class="hs-label">MAC</span>&nbsp;<span id="hud-guid" class="hs-val">—</span></span>
+        <span id="hud-id-row"><span class="hs-label">ID</span>&nbsp;<span class="hs-val" id="hub-id">—</span></span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sidebar toggle tab — outside sidebar so overflow:hidden doesn't clip it -->
+  <button id="sidebar-toggle" title="Toggle nav panel">&#9664;</button>
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+
+    <!-- Node list -->
+    <div class="panel" data-panel="nodes">
+      <div class="panel-header">
+        <span class="title">Nodes</span>
+        <span class="count" id="node-count">0</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="node-toolbar">
+        <input id="node-search" type="text" placeholder="Search nodes…" autocomplete="off" spellcheck="false">
+        <button id="node-sort-btn" title="Sort order" class="node-sort-btn">A→Z</button>
+      </div>
+      <div class="panel-body" id="node-list"></div>
+    </div>
+
+    <!-- Last RF packet -->
+    <div class="panel" data-panel="rf">
+      <div class="panel-header">
+        <span class="title">Last RF Packet</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="rf-stats">
+        <div class="rf-row"><span class="rf-label">Waiting…</span></div>
+      </div>
+    </div>
+
+    <!-- Hub health -->
+    <div class="panel" data-panel="health">
+      <div class="panel-header">
+        <span class="title">Hub Health</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div id="health-grid">
+        <div class="health-sys">
+          <div class="sys-item"><span class="sys-val">—</span><span class="sys-label">CPU</span></div>
+          <div class="sys-item"><span class="sys-val">—</span><span class="sys-label">MEM</span></div>
+          <div class="sys-item"><span class="sys-val">—</span><span class="sys-label">DISK</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sensor readings -->
+    <div class="panel" data-panel="sensors">
+      <div class="panel-header">
+        <span class="title">Sensors</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="sensor-list">
+        <div class="rf-row"><span class="rf-label">Waiting for telemetry…</span></div>
+      </div>
+    </div>
+
+    <!-- ATMO — Atmospheric intelligence — shown only when internet is ON -->
+    <div class="panel" id="atmo-panel" data-panel="atmo" style="display:none;">
+      <div class="panel-header">
+        <span class="title"><span class="online-globe">&#127760;</span> ATMO</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="atmo-body">
+        <div class="rf-row"><span class="rf-label">Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- NOAA Weather — shown only when internet toggle is ON -->
+    <div class="panel" id="weather-panel" data-panel="weather" style="display:none;">
+      <div class="panel-header">
+        <span class="title"><span class="online-globe">&#127760;</span> NOAA WEATHER</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="weather-body">
+        <div class="rf-row"><span class="rf-label">Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- Map Cache -->
+    <div class="panel" id="tilecache-panel-wrap" data-panel="tilecache">
+      <div class="panel-header">
+        <span class="title">Map Cache</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="tilecache-panel"></div>
+    </div>
+
+    <!-- Zones panel -->
+    <div class="panel" data-panel="zones">
+      <div class="panel-header">
+        <span class="title">🗺 Zones</span>
+        <span class="count" id="zone-count">0</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="zones-panel-body" style="padding:0;"></div>
+    </div>
+
+    <!-- Waypoints panel -->
+    <div class="panel" data-panel="waypoints">
+      <div class="panel-header">
+        <span class="title">📍 Waypoints</span>
+        <span class="count" id="wp-count">0</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="wp-panel-body" style="padding:0;"></div>
+    </div>
+
+    <!-- Messages panel -->
+    <div class="panel" id="mesh-panel" data-panel="mesh">
+      <div class="panel-header">
+        <span class="title">💬 Messages</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="mesh-panel-body" style="padding:0;">
+        <div class="mesh-toolbar">
+          <select id="mesh-filter-node" class="mesh-filter-sel">
+            <option value="">All nodes</option>
+          </select>
+          <button id="mesh-clear-btn" class="mesh-clear-btn" title="Clear history">🗑</button>
+        </div>
+        <div id="mesh-chat-list" class="mesh-chat-list"></div>
+        <button id="mesh-channel-compose-btn" class="mesh-chan-compose-btn">+ Send to Channel</button>
+      </div>
+    </div>
+
+    <!-- Event log -->
+    <div class="panel" id="event-log" data-panel="log">
+      <div class="panel-header">
+        <span class="title">Event Log</span>
+        <span class="chevron">&#9660;</span>
+      </div>
+      <div class="panel-body" id="log-list"></div>
+    </div>
+
+  </aside>
+
+  <!-- ── Map ─────────────────────────────────────────────────────────────── -->
+  <main id="map-container">
+    <div id="map"></div>
+
+    <!-- HUD overlay chips -->
+    <div id="map-hud">
+      <button id="hud-toggle" title="Toggle HUD">&#9660;</button>
+      <div id="hud-chips">
+      <div class="hud-chip" id="hub-chip" style="display:none"></div>
+      <!-- Lightning strike HUD chip — shown when strikes are in range -->
+      <div class="hud-chip" id="lightning-hud-chip" style="display:none;align-items:center;gap:4px;" title="Live lightning strikes within 100 mi"></div>
+      <!-- ATMO HUD chip — lightning risk + cloud cover -->
+      <div class="hud-chip" id="atmo-hud-chip" style="display:none;align-items:center;gap:5px;cursor:default;" title="ATMO: atmospheric intelligence"></div>
+      <!-- Wind HUD — shown when NOAA data is active -->
+      <div class="hud-chip" id="wind-hud" style="display:none;"></div>
+      <!-- Fire spread tool button -->
+      <div id="fire-btn" class="hud-chip hud-fire-btn">🔥 FIRE SPREAD</div>
+      <!-- Ember spot tool button -->
+      <div id="ember-btn" class="hud-chip hud-ember-btn">🌪 EMBER SPOT</div>
+      <!-- Measure tool -->
+      <div id="measure-btn" class="hud-chip hud-measure-btn">📐 MEASURE</div>
+      <!-- Measure results panel -->
+      <div id="measure-panel" class="measure-panel" style="display:none;"></div>
+      <!-- HQ Feed toggle — only shown when internet is on -->
+      <div id="fed-toggle-wrap" class="hud-chip hud-fed-chip" style="display:none;">
+        <label class="fed-toggle" title="Stream telemetry to HQ (hq.jtak.club)">
+          <input type="checkbox" id="fed-toggle-cb">
+          <span class="fed-track"><span class="fed-thumb"></span></span>
+          <span class="fed-label">&#x1F6F0; HQ FEED</span>
+        </label>
+      </div>
+      <!-- Waypoint drop-pin tool -->
+      <div id="wp-drop-btn" class="hud-chip hud-wp-btn" title="Drop a waypoint pin on the map">📍 WAYPOINT</div>
+
+      <!-- Center on hub -->
+      <div id="center-hub-btn" class="hud-chip hud-center-btn" title="Center on this hub">&#8982;</div>
+
+      <!-- LED brightness + Beacon — configurable via hud.chips: led_ctrl -->
+      <div id="led-hud">
+        <div id="led-ctrl" class="led-ctrl">
+          <span class="led-ctrl-icon">💡</span>
+          <div class="led-slider-wrap">
+            <input type="range" id="led-slider" min="0" max="100" value="100" step="5">
+            <span class="led-slider-label" id="led-slider-label">100%</span>
+          </div>
+        </div>
+        <button id="beacon-btn" class="beacon-btn" title="Toggle beacon strobe (orange/white)">
+          🚨 <span class="beacon-label">BEACON</span>
+        </button>
+      </div>
+      </div><!-- end #hud-chips -->
+    </div>
+    <!-- Map message toasts — inside map-container so position:absolute is relative to map -->
+    <div id="mesh-toast-container" class="mesh-toast-container"></div>
+
+    <!-- Loading overlay — shown until first telemetry arrives -->
+    <div id="map-loader">
+      <div class="map-loader-inner">
+        <div class="map-loader-ring"></div>
+        <div class="map-loader-label">LOADING TELEMETRY</div>
+      </div>
+    </div>
+  </main>
+
+<!-- ── Mesh Compose Modal ─────────────────────────────────────────────────── -->
+<div id="mesh-modal" class="mesh-modal-overlay" style="display:none;">
+  <div class="mesh-modal-box">
+    <div class="mesh-modal-hdr">
+      <span class="mesh-modal-title">💬 Send Message</span>
+      <button id="mesh-modal-close" class="mesh-modal-close">✕</button>
+    </div>
+    <div class="mesh-mode-tabs">
+      <button id="mesh-mode-direct"  class="mesh-tab active">Direct</button>
+      <button id="mesh-mode-channel" class="mesh-tab">Channel</button>
+    </div>
+    <div class="mesh-to-row">
+      <span class="mesh-to-lbl">To:</span>
+      <div id="mesh-recipients" class="mesh-chips"></div>
+      <button id="mesh-add-btn" class="mesh-add-btn">+ Node</button>
+    </div>
+    <div id="mesh-add-dropdown" class="mesh-dropdown" style="display:none;"></div>
+    <textarea id="mesh-msg-input" class="mesh-textarea"
+      placeholder="Type message…" rows="3"></textarea>
+    <div class="mesh-footer">
+      <span id="mesh-char-count" class="mesh-char ok">0 / 200</span>
+      <label id="mesh-ack-row" class="mesh-ack-lbl">
+        <input type="checkbox" id="mesh-want-ack" checked> wantAck
+      </label>
+      <button id="mesh-send-btn" class="mesh-send-btn" disabled>Send →</button>
+    </div>
+  </div>
+</div>
+
+<script src="/jtak/vendor/Sortable.min.js"></script>
+<script src="/jtak/js/theme.js"></script>
+<script type="module" src="/jtak/js/app.js"></script>
+</body>
+</html>

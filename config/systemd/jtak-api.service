@@ -1,0 +1,16 @@
+[Unit]
+Description=jTAK FastAPI Backend
+After=network.target rabbitmq-server.service meshtasticd.service
+StartLimitIntervalSec=0
+
+[Service]
+User=sdg
+WorkingDirectory=/opt/jtak/backend
+ExecStart=/opt/jtak/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

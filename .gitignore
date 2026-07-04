@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtualenv
+venv/
+
+# Runtime data — SQLite db, map tiles (~GBs), watermarks, caches
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets & per-hub identity — NEVER commit
+config/jtak.yaml
+config/jtak.identity.yaml
+config/ble_cache.json
+
+# Backups / editor cruft
+*.bak
+*.bak-*
+*.swp

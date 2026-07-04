@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# jTAK deploy — push code from TAK-2 to one or more hubs
+# NEVER overwrites jtak.identity.yaml or jtak.yaml on the target.
+#
+# Usage:
+#   /opt/jtak/bin/deploy tak1
+#   /opt/jtak/bin/deploy tak3
+#   /opt/jtak/bin/deploy tak1 tak3
+
+set -euo pipefail
+
+declare -A HUB_HOSTS=(
+  [tak1]="172.24.29.220"
+  [tak2]="192.168.86.40"
+  [tak3]="192.168.86.23"
+  [tak4]="172.24.94.122"
+  [tak5]="172.24.13.14"
+)
+
+SRC="/opt/jtak"
+TARGETS=("$@")
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+  echo "Usage: deploy <tak1|tak2|tak3|tak4|tak5> [...]"
+  exit 1
+fi
+
+for target in "${TARGETS[@]}"; do
+  HOST="${HUB_HOSTS[$target]:-}"
+  if [[ -z "$HOST" ]]; then
+    echo "Unknown target: $target (valid: tak1 tak2 tak3 tak4 tak5)"
+    exit 1
+  fi
+
+  echo "▶ Deploying to $target ($HOST)..."
+
+  # Ensure sdg owns the target code dirs (avoids rsync permission errors)
+  ssh "sdg@$HOST" "sudo chown -R sdg:sdg $SRC/backend $SRC/frontend $SRC/agents $SRC/bin 2>/dev/null || true"
+
+  # Sync only code directories — never config, data, venv, or pycache
+  for dir in backend frontend agents bin; do
+    rsync -rlpt --delete \
+      --exclude='__pycache__/' \
+      --exclude='*.pyc' \
+      "$SRC/$dir/" "sdg@$HOST:$SRC/$dir/"
+  done
+
+  # Sync bin dir and make scripts executable on target
+  ssh "sdg@$HOST" "chmod +x $SRC/bin/*"
+
+  # Restart the API service to pick up code changes
+  ssh "sdg@$HOST" "sudo systemctl restart jtak-api.service && sleep 2 && systemctl is-active jtak-api.service"
+
+  echo "✓ $target deployed and restarted"
+done

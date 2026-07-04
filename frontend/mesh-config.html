@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jTAK — Mesh Config</title>
+  <link rel="icon" type="image/png" href="/jtak/assets/shield.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/jtak/css/jtak.css">
+  <script>(function(){var t=localStorage.getItem('jtak_theme');if(t==='day')document.documentElement.dataset.theme='day';})();</script>
+  <style>
+    /* ── Login overlay ───────────────────────────────────────────── */
+    #login-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,0.88);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-box {
+      background: #1a1a1a; border: 1px solid #444; border-radius: 10px;
+      padding: 36px 40px; min-width: 320px; text-align: center;
+    }
+    .login-box img { width: 52px; margin-bottom: 12px; }
+    .login-box h2 {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 1.4rem;
+      font-weight: 700; letter-spacing: 1px; color: #e63946; margin: 0 0 6px;
+    }
+    .login-subtitle { font-size: 0.72rem; color: #888; letter-spacing: 1px;
+      text-transform: uppercase; margin-bottom: 24px; }
+    .login-field {
+      width: 100%; box-sizing: border-box; background: #111;
+      border: 1px solid #444; border-radius: 5px; color: #ddd;
+      font-size: 0.95rem; padding: 9px 12px; margin-bottom: 12px;
+      outline: none; font-family: 'Barlow Condensed', sans-serif;
+    }
+    .login-field:focus { border-color: #666; }
+    .login-btn {
+      width: 100%; padding: 10px; background: #e63946; border: none;
+      border-radius: 5px; color: #fff; font-family: 'Barlow Condensed', sans-serif;
+      font-size: 1rem; font-weight: 700; letter-spacing: 1px; cursor: pointer; margin-top: 4px;
+    }
+    .login-btn:hover { background: #c72b37; }
+    #login-error { color: #ff6b6b; font-size: 0.85rem; margin-top: 10px; min-height: 20px; }
+
+    /* ── Confirm modal ───────────────────────────────────────────── */
+    #confirm-overlay {
+      position: fixed; inset: 0; z-index: 8888;
+      background: rgba(0,0,0,0.75);
+      display: none; align-items: center; justify-content: center;
+    }
+    #confirm-overlay.visible { display: flex; }
+    .confirm-box {
+      background: #1c1c1c; border: 1px solid #555; border-radius: 8px;
+      padding: 28px 32px; min-width: 360px; max-width: 480px;
+    }
+    .confirm-box.danger { border-color: #7a1c1c; }
+    .confirm-icon { font-size: 1.8rem; margin-bottom: 10px; }
+    .confirm-title {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 1.15rem;
+      font-weight: 700; letter-spacing: 1px; color: #ddd; margin-bottom: 8px;
+    }
+    .confirm-box.danger .confirm-title { color: #ff6b6b; }
+    .confirm-warning {
+      font-size: 0.78rem; color: #ff6b6b; font-weight: 600; letter-spacing: 0.5px;
+      text-transform: uppercase; margin-bottom: 10px;
+    }
+    .confirm-body {
+      font-size: 0.85rem; color: #aaa; margin-bottom: 14px; line-height: 1.5;
+    }
+    .confirm-node-list {
+      background: #111; border-radius: 4px; padding: 8px 12px;
+      margin-bottom: 16px; font-size: 0.8rem; color: #ccc;
+      max-height: 120px; overflow-y: auto;
+    }
+    .confirm-node-list div { padding: 2px 0; }
+    .confirm-type-row { margin-bottom: 16px; display: none; }
+    .confirm-type-row label { font-size: 0.78rem; color: #888; display: block; margin-bottom: 5px; }
+    #confirm-type-input {
+      width: 100%; box-sizing: border-box; background: #111;
+      border: 1px solid #555; border-radius: 4px; color: #ddd;
+      font-size: 0.9rem; padding: 7px 10px; outline: none;
+      font-family: monospace; letter-spacing: 1px;
+    }
+    .confirm-btns { display: flex; gap: 10px; justify-content: flex-end; }
+    .confirm-cancel {
+      padding: 8px 20px; background: #2a2a2a; border: 1px solid #444;
+      border-radius: 5px; color: #aaa; cursor: pointer;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.9rem;
+    }
+    .confirm-cancel:hover { border-color: #666; color: #ddd; }
+    #confirm-ok {
+      padding: 8px 22px; background: #c0392b; border: none;
+      border-radius: 5px; color: #fff; cursor: pointer;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.9rem;
+      font-weight: 700; letter-spacing: 0.5px;
+    }
+    #confirm-ok:disabled { background: #444; cursor: not-allowed; }
+    #confirm-ok:not(:disabled):hover { background: #a93226; }
+
+    /* ── Page layout ─────────────────────────────────────────────── */
+    #mc-body { display: flex; flex-direction: column; height: calc(100vh - 48px); overflow: hidden; }
+    #mc-main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Node list ───────────────────────────────────────────────── */
+    #mc-nodes {
+      width: 250px; min-width: 210px; background: #0f0f0f;
+      border-right: 1px solid #252525;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .mc-panel-hdr {
+      padding: 9px 13px 8px;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.7rem;
+      font-weight: 700; letter-spacing: 1.5px; color: #555;
+      border-bottom: 1px solid #1e1e1e;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .select-all-btn {
+      margin-left: auto; font-size: 0.66rem; color: #444;
+      background: none; border: 1px solid #2a2a2a; border-radius: 3px;
+      padding: 2px 7px; cursor: pointer; letter-spacing: 0.5px;
+      font-family: 'Barlow Condensed', sans-serif;
+    }
+    .select-all-btn:hover { border-color: #555; color: #999; }
+    #node-list-inner { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+    .node-row {
+      display: flex; align-items: center; gap: 9px;
+      padding: 7px 12px; cursor: pointer;
+      border-bottom: 1px solid #161616; transition: background 0.1s;
+    }
+    .node-row:hover { background: #161616; }
+    .node-row.selected { background: #1a1a26; }
+    .node-row.node-offline { cursor: default; opacity: 0.6; }
+    .node-row.node-offline:hover { background: transparent; }
+    .node-row input[type=checkbox] {
+      accent-color: #e63946; width: 14px; height: 14px;
+      cursor: pointer; flex-shrink: 0;
+    }
+    .node-checkbox-spacer { width: 14px; flex-shrink: 0; }
+    .node-info { flex: 1; min-width: 0; }
+    .node-name {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.9rem;
+      font-weight: 600; color: #ddd;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .node-sub {
+      font-size: 0.66rem; color: #444; margin-top: 2px;
+      font-family: monospace; line-height: 1.3;
+    }
+    .node-sub .node-ip { color: #3a6a9e; }
+    .node-sub .node-tag {
+      display: inline-block; font-size: 0.6rem; font-family: 'Barlow Condensed', sans-serif;
+      letter-spacing: 0.5px; padding: 1px 5px; border-radius: 3px; margin-top: 2px;
+    }
+    .node-tag.self   { background: #1a2a3a; color: #5a9fd4; }
+    .node-tag.mesh     { background: #1e1e00; color: #888822; }
+    .node-tag.offline  { background: #2a2a2a; color: #666; }
+    .node-tag.ble-only { background: #0d1e33; color: #4a9fd4; }
+
+    /* Connectivity dots */
+    .node-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .node-dot.self    { background: #2196f3; box-shadow: 0 0 5px #2196f3; }
+    .node-dot.tcp     { background: #4caf50; box-shadow: 0 0 4px #4caf50; }
+    .node-dot.mesh    { background: #c8b400; box-shadow: 0 0 4px #c8b400; }
+    .node-dot.offline { background: #444; }
+    .node-dot.ble     { background: #2196f3; box-shadow: 0 0 4px #2196f3; }
+
+    .mc-node-count {
+      padding: 7px 13px; font-size: 0.67rem; color: #3a3a3a;
+      border-top: 1px solid #1a1a1a; font-family: 'Barlow Condensed', sans-serif;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Config panel ────────────────────────────────────────────── */
+    #mc-config { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+
+    .mc-section { background: #141414; border: 1px solid #252525; border-radius: 7px; }
+    .mc-section-hdr {
+      background: #1a1a1a; padding: 8px 15px;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.72rem;
+      font-weight: 700; letter-spacing: 1.5px; color: #777;
+      border-bottom: 1px solid #252525;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .mc-section-hdr .hdr-note { font-size: 0.65rem; color: #444; font-weight: 400; letter-spacing: 0; margin-left: 4px; }
+    .mc-section-body { padding: 13px 15px; }
+
+    .mc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; flex-wrap: wrap; }
+    .mc-row:last-child { margin-bottom: 0; }
+    .mc-label {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.78rem;
+      font-weight: 600; color: #777; letter-spacing: 0.5px; min-width: 118px;
+    }
+    .mc-select, .mc-input {
+      background: #0f0f0f; border: 1px solid #2e2e2e; border-radius: 4px;
+      color: #ccc; font-size: 0.86rem; padding: 6px 9px;
+      font-family: 'Barlow Condensed', sans-serif; outline: none; min-width: 155px;
+    }
+    .mc-select:focus, .mc-input:focus { border-color: #4a4a4a; }
+    .mc-input-sm { min-width: 75px; max-width: 90px; }
+
+    .mc-toggle-row { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+    .mc-toggle-row:last-child { margin-bottom: 0; }
+    .mc-toggle-label { font-family: 'Barlow Condensed', sans-serif; font-size: 0.83rem; color: #bbb; }
+    .mc-cb { accent-color: #4caf50; width: 15px; height: 15px; cursor: pointer; }
+    .mc-cb-group { display: flex; gap: 16px; flex-wrap: wrap; }
+    #custom-lora { display: none; }
+
+    /* ── Actions ─────────────────────────────────────────────────── */
+    .action-grid { display: flex; gap: 9px; flex-wrap: wrap; }
+    .mc-action-btn {
+      padding: 7px 15px; border: 1px solid #333; border-radius: 5px;
+      background: #181818; color: #bbb;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.86rem;
+      font-weight: 600; letter-spacing: 0.3px; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .mc-action-btn:hover { background: #202020; border-color: #555; color: #eee; }
+    .mc-action-btn.danger { border-color: #5c1515; color: #e57373; }
+    .mc-action-btn.danger:hover { background: #220d0d; border-color: #c62828; }
+
+    /* ── Apply bar ───────────────────────────────────────────────── */
+    #mc-apply-bar {
+      padding: 10px 16px; border-top: 1px solid #1e1e1e; background: #0c0c0c;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    #apply-btn {
+      padding: 9px 26px; background: #e63946; border: none; border-radius: 5px;
+      color: #fff; font-family: 'Barlow Condensed', sans-serif;
+      font-size: 0.95rem; font-weight: 700; letter-spacing: 1px; cursor: pointer;
+    }
+    #apply-btn:hover { background: #c72b37; }
+    #apply-btn:disabled { background: #333; cursor: not-allowed; color: #666; }
+    #apply-status { font-size: 0.78rem; color: #555; flex: 1; }
+
+    /* BLE bootstrap bar */
+    #mc-ble-bar {
+      padding: 7px 16px; border-top: 1px solid #111; background: #080c10;
+      display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+    }
+    .ble-bar-label {
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.75rem;
+      font-weight: 700; letter-spacing: 1px; color: #2a4a66; flex-shrink: 0;
+    }
+    #ble-scan-btn, #ble-key-btn {
+      padding: 5px 13px; border-radius: 4px; cursor: pointer;
+      font-family: 'Barlow Condensed', sans-serif; font-size: 0.78rem;
+      font-weight: 700; letter-spacing: 0.5px; transition: background 0.1s;
+    }
+    #ble-scan-btn {
+      background: #0c2035; border: 1px solid #1e4066; color: #4a8ab5;
+    }
+    #ble-scan-btn:hover { background: #122840; }
+    #ble-scan-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    #ble-key-btn {
+      background: #0c2a1a; border: 1px solid #1a5c30; color: #4ab575;
+    }
+    #ble-key-btn:hover { background: #12381f; }
+    #ble-key-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    #ble-status {
+      font-size: 0.71rem; color: #2a4a66; flex: 1;
+    }
+    .ble-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: #1e3a55; margin-left: 3px; vertical-align: middle; flex-shrink: 0;
+    }
+    .ble-dot.cached  { background: #4a8ab5; }
+    .ble-dot.scanned { background: #4caf50; }
+
+    /* ── Results log ─────────────────────────────────────────────── */
+    #mc-log {
+      width: 250px; min-width: 200px; background: #080808;
+      border-left: 1px solid #1e1e1e; display: flex; flex-direction: column; overflow: hidden;
+    }
+    #log-inner {
+      flex: 1; overflow-y: auto; padding: 7px 10px;
+      font-family: monospace; font-size: 0.7rem; color: #555;
+    }
+    .log-entry { margin-bottom: 3px; line-height: 1.4; word-break: break-word; }
+    .log-ok   { color: #4caf50; }
+    .log-err  { color: #ef5350; }
+    .log-info { color: #999; }
+    .log-time { color: #3a3a3a; margin-right: 4px; }
+    #log-clear {
+      padding: 5px 10px; font-size: 0.65rem; color: #333;
+      background: none; border: none; border-top: 1px solid #181818;
+      cursor: pointer; text-align: right; font-family: monospace;
+    }
+    #log-clear:hover { color: #777; }
+
+    /* ── Legend ──────────────────────────────────────────────────── */
+    .legend {
+      display: flex; gap: 12px; padding: 5px 13px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; font-size: 0.63rem; color: #444; }
+    .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+    /* ── Collapsible group headers ───────────────────────────────── */
+    .node-group-hdr {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px 4px;
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 1px;
+      color: #444; cursor: pointer; user-select: none;
+      border-bottom: 1px solid #161616;
+      background: #0c0c0c;
+    }
+    .node-group-hdr:hover { color: #666; }
+    .node-group-hdr .grp-arrow { font-size: 0.6rem; transition: transform 0.15s; }
+    .node-group-hdr.collapsed .grp-arrow { transform: rotate(-90deg); }
+    .node-group-hdr .grp-count {
+      margin-left: auto; font-size: 0.62rem; color: #333;
+    }
+    .node-group-body.collapsed { display: none; }
+
+    /* ── Inspect result grid ─────────────────────────────────────── */
+    #inspect-result {
+      display: none;
+      margin-top: 10px;
+      background: #0a0a0a; border: 1px solid #1e1e1e; border-radius: 4px;
+      padding: 10px 12px;
+      max-height: 380px; overflow-y: auto;
+      font-family: 'Barlow Condensed', monospace;
+      font-size: 0.76rem;
+    }
+    .inspect-grid {
+      display: grid; grid-template-columns: 1fr; gap: 0;
+    }
+    .inspect-section-hdr {
+      grid-column: 1 / -1;
+      font-size: 0.67rem; font-weight: 700; letter-spacing: 1px;
+      color: #555; padding: 7px 0 4px;
+      border-bottom: 1px solid #1e1e1e; margin-bottom: 5px;
+      font-family: 'Barlow Condensed', sans-serif;
+    }
+    .inspect-section-hdr:first-child { padding-top: 0; }
+    .inspect-kv {
+      display: flex; flex-direction: column; padding: 3px 6px 3px 0;
+    }
+    .inspect-kv.full { }
+    .ik { font-size: 0.62rem; color: #444; letter-spacing: 0.5px;
+          text-transform: uppercase; margin-bottom: 1px; }
+    .iv { color: #bbb; font-size: 0.8rem; font-family: monospace; }
+    .iv.good { color: #4caf50; }
+    .iv.warn { color: #c8b400; }
+    .iv.muted { color: #555; }
+    .iv.powered { color: #2196f3; }
+    .inspect-ch {
+      grid-column: 1 / -1;
+      display: flex; gap: 8px; align-items: baseline;
+      padding: 3px 0; border-bottom: 1px dotted #1a1a1a; font-family: monospace;
+    }
+    .inspect-ch:last-child { border-bottom: none; }
+    .ich-idx { color: #444; font-size: 0.68rem; min-width: 18px; }
+    .ich-star { color: #c8b400; font-size: 0.7rem; min-width: 10px; }
+    .ich-name { color: #ccc; flex: 1; }
+    .ich-psk { color: #555; font-size: 0.68rem; }
+    .ich-updown { color: #3a6a9e; font-size: 0.65rem; }
+    .inspect-note {
+      grid-column: 1 / -1; color: #666; font-style: italic;
+      font-size: 0.72rem; padding: 4px 0;
+    }
+
+    /* ── Day mode overrides ──────────────────────────────────────── */
+    html[data-theme="day"] body { background: var(--bg); color: var(--white); }
+
+    html[data-theme="day"] header {
+      background: var(--surface) !important;
+      border-bottom-color: var(--border) !important;
+    }
+    html[data-theme="day"] .login-box {
+      background: var(--surface); border-color: var(--border);
+    }
+    html[data-theme="day"] .login-field {
+      background: var(--surface2); border-color: var(--border); color: var(--white);
+    }
+    html[data-theme="day"] .confirm-box {
+      background: var(--surface); border-color: var(--border);
+    }
+    html[data-theme="day"] .confirm-body { color: var(--muted); }
+    html[data-theme="day"] .confirm-node-list {
+      background: var(--surface2); color: var(--silver);
+    }
+    html[data-theme="day"] #confirm-type-input {
+      background: var(--surface2); border-color: var(--border); color: var(--white);
+    }
+    html[data-theme="day"] .confirm-cancel {
+      background: var(--surface2); border-color: var(--border); color: var(--muted);
+    }
+    html[data-theme="day"] #mc-nodes {
+      background: var(--surface); border-right-color: var(--border);
+    }
+    html[data-theme="day"] .mc-panel-hdr {
+      color: var(--muted); border-bottom-color: var(--border);
+    }
+    html[data-theme="day"] .select-all-btn {
+      color: var(--muted); border-color: var(--border);
+    }
+    html[data-theme="day"] .select-all-btn:hover { color: var(--white); }
+    html[data-theme="day"] .legend { border-bottom-color: var(--border); }
+    html[data-theme="day"] .legend-item { color: var(--muted); }
+    html[data-theme="day"] .node-group-hdr {
+      color: var(--muted); border-bottom-color: var(--border);
+      background: var(--surface2);
+    }
+    html[data-theme="day"] .node-group-hdr .grp-count { color: var(--muted); }
+    html[data-theme="day"] .node-row {
+      border-bottom-color: var(--border);
+    }
+    html[data-theme="day"] .node-row:hover { background: var(--surface2); }
+    html[data-theme="day"] .node-row.selected { background: rgba(196,48,0,0.10); }
+    html[data-theme="day"] .node-name { color: var(--silver); }
+    html[data-theme="day"] .node-sub { color: var(--muted); }
+    html[data-theme="day"] .node-sub .node-ip { color: #1a5a9e; }
+    html[data-theme="day"] .mc-node-count {
+      color: var(--muted); border-top-color: var(--border);
+    }
+    html[data-theme="day"] #mc-config { /* inherits body bg */ }
+    html[data-theme="day"] .mc-section {
+      background: var(--surface); border-color: var(--border);
+    }
+    html[data-theme="day"] .mc-section-hdr {
+      background: var(--surface2); color: var(--muted);
+      border-bottom-color: var(--border);
+    }
+    html[data-theme="day"] .mc-section-hdr .hdr-note { color: var(--muted); }
+    html[data-theme="day"] .mc-label { color: var(--muted); }
+    html[data-theme="day"] .mc-select, html[data-theme="day"] .mc-input {
+      background: var(--surface2); border-color: var(--border); color: var(--silver);
+    }
+    html[data-theme="day"] .mc-toggle-label { color: var(--silver); }
+    html[data-theme="day"] .mc-action-btn {
+      background: var(--surface2); border-color: var(--border); color: var(--silver);
+    }
+    html[data-theme="day"] .mc-action-btn:hover {
+      background: var(--surface); border-color: var(--muted); color: var(--white);
+    }
+    html[data-theme="day"] #mc-apply-bar {
+      background: var(--surface); border-top-color: var(--border);
+    }
+    html[data-theme="day"] #apply-status { color: var(--muted); }
+    html[data-theme="day"] #mc-ble-bar { background: var(--surface2); border-top-color: var(--border); }
+    html[data-theme="day"] .ble-bar-label { color: #aaa; }
+    html[data-theme="day"] #ble-scan-btn { background: #e3f0fb; border-color: #90caf9; color: #1565c0; }
+    html[data-theme="day"] #ble-key-btn  { background: #e3f5e8; border-color: #81c784; color: #1b5e20; }
+    html[data-theme="day"] #ble-status { color: var(--muted); }
+    html[data-theme="day"] #mc-log {
+      background: var(--surface2); border-left-color: var(--border);
+    }
+    html[data-theme="day"] #log-inner { color: var(--muted); }
+    html[data-theme="day"] .log-ok   { color: #006b1e; }
+    html[data-theme="day"] .log-err  { color: #bb0000; }
+    html[data-theme="day"] .log-info { color: var(--muted); }
+    html[data-theme="day"] .log-time { color: var(--border); }
+    html[data-theme="day"] #log-clear { color: var(--muted); border-top-color: var(--border); }
+    html[data-theme="day"] #log-clear:hover { color: var(--white); }
+    html[data-theme="day"] #inspect-result {
+      background: var(--surface2); border-color: var(--border);
+    }
+    html[data-theme="day"] .inspect-section-hdr { color: var(--muted); border-bottom-color: var(--border); }
+    html[data-theme="day"] .ik { color: var(--muted); }
+    html[data-theme="day"] .iv { color: var(--silver); }
+    html[data-theme="day"] .iv.muted { color: var(--border); }
+    html[data-theme="day"] .ich-name { color: var(--silver); }
+    html[data-theme="day"] .ich-psk  { color: var(--muted); }
+    html[data-theme="day"] .ich-idx, html[data-theme="day"] .ich-star { color: var(--muted); }
+    html[data-theme="day"] .inspect-ch { border-bottom-color: var(--border); }
+    html[data-theme="day"] .mc-hub-badge-txt { color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ── Login overlay ─────────────────────────────────────────────────────── -->
+<div id="login-overlay">
+  <div class="login-box">
+    <img src="/jtak/assets/shield.png" alt="">
+    <h2>MESH CONFIG</h2>
+    <div class="login-subtitle">jTAK Administrator Access</div>
+    <input id="login-user" class="login-field" type="text" placeholder="Username" value="admin" autocomplete="username">
+    <input id="login-pass" class="login-field" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="login-btn" onclick="doLogin()">LOGIN</button>
+    <div id="login-error"></div>
+  </div>
+</div>
+
+<!-- ── Confirm modal ──────────────────────────────────────────────────────── -->
+<div id="confirm-overlay">
+  <div class="confirm-box" id="confirm-box">
+    <div class="confirm-icon" id="confirm-icon">⚠️</div>
+    <div class="confirm-title" id="confirm-title">Confirm Action</div>
+    <div class="confirm-warning" id="confirm-warning"></div>
+    <div class="confirm-body" id="confirm-body"></div>
+    <div class="confirm-node-list" id="confirm-node-list"></div>
+    <div class="confirm-type-row" id="confirm-type-row">
+      <label>Type <strong>RESET</strong> to confirm:</label>
+      <input type="text" id="confirm-type-input" placeholder="" oninput="checkTypeConfirm()">
+    </div>
+    <div class="confirm-btns">
+      <button class="confirm-cancel" onclick="closeConfirm()">Cancel</button>
+      <button id="confirm-ok" onclick="executeConfirmed()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────────────────── -->
+<div id="mc-app" style="display:none;height:100vh;flex-direction:column;">
+
+  <header style="display:flex;align-items:center;background:#0d0d0d;border-bottom:1px solid #1e1e1e;height:48px;flex-shrink:0;">
+    <nav class="tab-bar">
+      <a href="/jtak/" class="tab"><span class="tab-icon">&#9679;</span> LIVE</a>
+      <a href="/jtak/history.html" class="tab"><span class="paw-icon">&#128062;</span> TRACKS</a>
+      <a href="/jtak/iap.html" class="tab"><span class="tab-icon">&#128293;</span> INCIDENTS</a>
+      <a href="/jtak/mesh-config.html" class="tab active"><span class="tab-icon">&#128268;</span> MESH CONFIG</a>
+    </nav>
+    <div style="flex:1;"></div>
+    <div id="mc-hub-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:0.75rem;color:#444;letter-spacing:1px;padding-right:12px;"></div>
+    <button id="theme-toggle" class="theme-toggle-btn" title="Toggle theme" onclick="toggleTheme()">&#9728;</button>
+    <button onclick="doLogout()" style="background:none;border:none;color:#444;font-size:0.7rem;padding:0 13px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;letter-spacing:1px;">LOGOUT</button>
+  </header>
+
+  <div id="mc-body">
+    <div id="mc-main">
+
+      <!-- Node list -->
+      <div id="mc-nodes">
+        <div class="mc-panel-hdr">
+          NODES
+          <button class="select-all-btn" onclick="toggleSelectAll()">SELECT ALL</button>
+        </div>
+        <div class="legend">
+          <div class="legend-item"><div class="legend-dot" style="background:#2196f3;box-shadow:0 0 4px #2196f3"></div> this hub</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#4caf50;box-shadow:0 0 3px #4caf50"></div> TCP</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#c8b400;box-shadow:0 0 3px #c8b400"></div> mesh admin</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#2196f3;box-shadow:0 0 3px #2196f3;opacity:0.6"></div> BLE only</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#444"></div> offline</div>
+        </div>
+        <div id="node-list-inner">
+          <div style="padding:14px;font-size:0.73rem;color:#333;">Loading mesh nodes…</div>
+        </div>
+        <!-- groups injected by renderNodes() -->
+        <div class="mc-node-count" id="node-count">0 selected</div>
+      </div>
+
+      <!-- Config panel -->
+      <div id="mc-config">
+
+        <!-- RF / LoRa -->
+        <div class="mc-section">
+          <div class="mc-section-hdr">
+            <span>&#128225;</span> RF / LORA
+          </div>
+          <div class="mc-section-body">
+            <div class="mc-toggle-row">
+              <input type="checkbox" class="mc-cb" id="use-preset" checked onchange="togglePresetMode()">
+              <label class="mc-toggle-label" for="use-preset">Use Modem Preset</label>
+            </div>
+
+            <div id="preset-row" class="mc-row">
+              <span class="mc-label">Modem Preset</span>
+              <select class="mc-select" id="modem-preset">
+                <option value="0">LONG_FAST (SF11 / BW250 / CR4-5)</option>
+                <option value="1">LONG_SLOW (SF12 / BW125 / CR4-8)</option>
+                <option value="2">VERY_LONG_SLOW (SF12 / BW62.5 / CR4-8)</option>
+                <option value="3">MEDIUM_SLOW (SF11 / BW125 / CR4-8)</option>
+                <option value="4">MEDIUM_FAST (SF10 / BW250 / CR4-7)</option>
+                <option value="5">SHORT_SLOW (SF9 / BW250 / CR4-8)</option>
+                <option value="6">SHORT_FAST (SF8 / BW250 / CR4-6)</option>
+                <option value="7">LONG_MODERATE (SF11 / BW125 / CR4-5)</option>
+                <option value="8">SHORT_TURBO (SF7 / BW500 / CR4-5)</option>
+              </select>
+            </div>
+
+            <div id="custom-lora">
+              <div class="mc-row">
+                <span class="mc-label">Spreading Factor</span>
+                <select class="mc-select" id="spread-factor">
+                  <option value="0">— keep current —</option>
+                  <option value="7">SF7 (fastest / shortest range)</option>
+                  <option value="8">SF8</option>
+                  <option value="9">SF9</option>
+                  <option value="10">SF10</option>
+                  <option value="11">SF11</option>
+                  <option value="12">SF12 (slowest / longest range)</option>
+                </select>
+              </div>
+              <div class="mc-row">
+                <span class="mc-label">Bandwidth</span>
+                <select class="mc-select" id="bandwidth">
+                  <option value="0">— keep current —</option>
+                  <option value="3">31.25 kHz (most range)</option>
+                  <option value="4">62.5 kHz</option>
+                  <option value="1">125 kHz</option>
+                  <option value="2">250 kHz</option>
+                  <option value="5">500 kHz (most throughput)</option>
+                </select>
+              </div>
+              <div class="mc-row">
+                <span class="mc-label">Coding Rate</span>
+                <select class="mc-select" id="coding-rate">
+                  <option value="0">— keep current —</option>
+                  <option value="5">CR4/5 (least overhead)</option>
+                  <option value="6">CR4/6</option>
+                  <option value="7">CR4/7</option>
+                  <option value="8">CR4/8 (most error correction)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mc-row" style="margin-top:10px;">
+              <span class="mc-label">TX Power</span>
+              <input type="number" class="mc-input mc-input-sm" id="tx-power" placeholder="0=max" min="0" max="30">
+              <span style="font-size:0.75rem;color:#444;">dBm &nbsp;(0 = device max)</span>
+            </div>
+
+            <div class="mc-row">
+              <span class="mc-label">Hop Count</span>
+              <input type="number" class="mc-input mc-input-sm" id="hop-limit" placeholder="3" min="1" max="7">
+              <span style="font-size:0.75rem;color:#444;">hops &nbsp;(default 3, max 7)</span>
+            </div>
+
+            <div style="margin-top:10px;" class="mc-cb-group">
+              <label class="mc-toggle-row" style="margin-bottom:0;">
+                <input type="checkbox" class="mc-cb" id="rx-boost">
+                <span class="mc-toggle-label">RX Boosted Gain</span>
+              </label>
+              <label class="mc-toggle-row" style="margin-bottom:0;">
+                <input type="checkbox" class="mc-cb" id="override-duty">
+                <span class="mc-toggle-label">Override Duty Cycle</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Identity -->
+        <div class="mc-section">
+          <div class="mc-section-hdr">
+            <span>&#128100;</span> IDENTITY
+            <span class="hdr-note">Select exactly one node · leave blank to keep existing</span>
+          </div>
+          <div class="mc-section-body">
+            <div class="mc-row">
+              <span class="mc-label">Long Name</span>
+              <input type="text" class="mc-input" id="long-name" placeholder="e.g. jTAK Hub 1" maxlength="39">
+            </div>
+            <div class="mc-row">
+              <span class="mc-label">Short Name</span>
+              <input type="text" class="mc-input mc-input-sm" id="short-name" placeholder="HUB1" maxlength="4">
+            </div>
+            <button class="mc-action-btn" onclick="applyIdentity()" style="margin-top:6px;">Apply Identity</button>
+          </div>
+        </div>
+
+        <!-- Node Actions -->
+        <div class="mc-section">
+          <div class="mc-section-hdr">
+            <span>&#9889;</span> NODE ACTIONS
+            <span class="hdr-note">Applied to selected nodes — TCP-reachable only</span>
+          </div>
+          <div class="mc-section-body">
+            <div class="action-grid">
+              <button class="mc-action-btn" onclick="runAction('nodeinfo')"
+                title="Re-broadcast NodeInfo to propagate keys + names across mesh">
+                &#128239; Send NodeInfo
+              </button>
+              <button class="mc-action-btn" onclick="confirmAction('dbreset')"
+                title="Wipe neighbor DB — nodes reacquire via live LoRa traffic">
+                &#128260; Node DB Reset
+              </button>
+              <button class="mc-action-btn" onclick="confirmAction('reboot')"
+                title="Reboot selected nodes">
+                &#9850; Reboot
+              </button>
+              <button class="mc-action-btn danger" onclick="confirmAction('factory_reset')"
+                title="Factory reset — wipes ALL config. Irreversible.">
+                &#9888; Factory Reset
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inspect -->
+        <!-- Device Settings -->
+        <div class="mc-section">
+          <div class="mc-section-hdr">
+            <span>&#9881;</span> DEVICE SETTINGS
+            <span class="hdr-note">Pushed to selected nodes</span>
+          </div>
+          <div class="mc-section-body">
+            <div class="mc-row">
+              <span class="mc-label">Timezone (POSIX)</span>
+              <input type="text" class="mc-input" id="dev-tzdef"
+                     placeholder="MST7MDT,M3.2.0,M11.1.0" style="flex:1;font-family:monospace;font-size:0.78rem;">
+            </div>
+            <div class="mc-row" style="margin-top:8px;">
+              <span class="mc-label">BT Pairing</span>
+              <select class="mc-select" id="dev-bt-mode" style="flex:1;" onchange="updatePinVisibility()">
+                <option value="">(no change)</option>
+                <option value="0">Random PIN</option>
+                <option value="1">Fixed PIN</option>
+                <option value="2">No PIN</option>
+              </select>
+            </div>
+            <div class="mc-row" id="dev-pin-row" style="margin-top:8px;display:none;">
+              <span class="mc-label">Fixed PIN</span>
+              <input type="number" class="mc-input mc-input-sm" id="dev-bt-pin"
+                     placeholder="123456" min="0" max="999999" style="width:90px;">
+            </div>
+            <button class="mc-action-btn" onclick="applyDeviceSettings()" style="margin-top:10px;">Push Device Settings</button>
+          </div>
+        </div>
+
+        <div class="mc-section">
+          <div class="mc-section-hdr">
+            <span>&#128270;</span> INSPECT NODE
+            <span class="hdr-note">Read live config from a single node</span>
+          </div>
+          <div class="mc-section-body">
+            <div class="mc-row">
+              <select class="mc-select" id="inspect-target"></select>
+              <button class="mc-action-btn" onclick="inspectNode()">Read Config</button>
+            </div>
+            <div id="inspect-result"></div>
+          </div>
+        </div>
+
+      </div><!-- /#mc-config -->
+
+      <!-- Results log -->
+      <div id="mc-log">
+        <div class="mc-panel-hdr">ACTIVITY LOG</div>
+        <div id="log-inner"></div>
+        <button id="log-clear" onclick="clearLog()">clear</button>
+      </div>
+
+    </div><!-- /#mc-main -->
+
+    <!-- Apply bar (mesh admin) -->
+    <div id="mc-apply-bar">
+      <button id="apply-btn" onclick="applyLora()" disabled>Apply RF Config</button>
+      <span id="apply-status">Select nodes to configure</span>
+    </div>
+
+    <!-- BLE bootstrap bar (admin key registration) -->
+    <div id="mc-ble-bar">
+      <span class="ble-bar-label">&#128268; BLE BOOTSTRAP</span>
+      <button id="ble-scan-btn" onclick="scanBLE()">Scan</button>
+      <button id="ble-key-btn" onclick="pushAdminKey()" disabled>Push Admin Key</button>
+      <span id="ble-status">Scan to find radios in BLE range, then push hub public key</span>
+    </div>
+  </div><!-- /#mc-body -->
+
+</div><!-- /#mc-app -->
+
+<script>
+const API = '/jtak/api';
+let _token  = sessionStorage.getItem('jtak_admin_token') || '';
+let _nodes  = [];
+let _selected = new Set();
+let _pendingAction = null;   // {action, keys, names}
+let _bleCache  = {};         // {node_id: {address, ble_name, long_name, last_seen}}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+async function doLogin() {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const err  = document.getElementById('login-error');
+  err.textContent = '';
+  try {
+    const r = await fetch(`${API}/auth/login`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({username:user, password:pass}),
+    });
+    if (!r.ok) { err.textContent = 'Invalid credentials'; return; }
+    _token = (await r.json()).token;
+    sessionStorage.setItem('jtak_admin_token', _token);
+    showApp();
+  } catch(e) { err.textContent = 'Connection error'; }
+}
+
+async function verifyToken() {
+  if (!_token) return false;
+  try {
+    return (await fetch(`${API}/auth/verify`, {headers:{'Authorization':`Bearer ${_token}`}})).ok;
+  } catch { return false; }
+}
+
+function doLogout() {
+  sessionStorage.removeItem('jtak_admin_token');
+  _token = '';
+  document.getElementById('mc-app').style.display  = 'none';
+  document.getElementById('login-overlay').style.display = 'flex';
+}
+
+document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+async function init() {
+  if (await verifyToken()) showApp();
+  else document.getElementById('login-overlay').style.display = 'flex';
+}
+
+function showApp() {
+  document.getElementById('login-overlay').style.display = 'none';
+  const app = document.getElementById('mc-app');
+  app.style.display = 'flex';
+  loadNodes();
+  loadTz();
+}
+
+async function loadTz() {
+  const r = await apiFetch('/settings/timezone');
+  if (r?.posix_timezone)
+    document.getElementById('dev-tzdef').value = r.posix_timezone;
+}
+
+function updatePinVisibility() {
+  const mode = document.getElementById('dev-bt-mode').value;
+  document.getElementById('dev-pin-row').style.display = mode === '1' ? 'flex' : 'none';
+}
+
+// Basic POSIX TZ string validation
+function isValidPosixTz(s) {
+  // Must start with std abbreviation (letters, or quoted), followed by offset number
+  return /^[A-Za-z<][A-Za-z+\-0-9:>]{1,}[+\-]?\d/.test(s) || s === 'UTC0' || s === 'UTC';
+}
+
+async function applyDeviceSettings() {
+  if (_selected.size === 0) { alert('Select at least one node.'); return; }
+  const tzdef  = document.getElementById('dev-tzdef').value.trim();
+  const btMode = document.getElementById('dev-bt-mode').value;
+  const btPin  = document.getElementById('dev-bt-pin').value.trim();
+
+  if (!tzdef && !btMode) { alert('Enter at least one setting to push.'); return; }
+
+  if (tzdef && !isValidPosixTz(tzdef)) {
+    alert('Invalid POSIX timezone string.\nExample: MST7MDT,M3.2.0,M11.1.0');
+    return;
+  }
+  if (btMode === '1' && (!btPin || btPin.length > 6)) {
+    alert('Fixed PIN must be up to 6 digits.');
+    return;
+  }
+
+  const payload = { node_keys: [..._selected] };
+  if (tzdef)  payload.tzdef   = tzdef;
+  if (btMode) payload.bt_mode = parseInt(btMode);
+  if (btMode === '1' && btPin) payload.bt_pin = parseInt(btPin);
+
+  logInfo(`Pushing device settings to ${_selected.size} node(s)…`);
+  const r = await apiFetch('/mesh-config/batch/device', 'POST', payload);
+  if (r) {
+    r.results.forEach(res => res.ok
+      ? logOk(`${res.name}: ${res.message}`)
+      : logErr(`${res.name}: ${res.message}`));
+    // Persist the POSIX string to this hub's yaml if any node succeeded
+    if (tzdef && r.results.some(res => res.ok))
+      await apiFetch('/settings/posix-timezone', 'POST', {posix_timezone: tzdef});
+  }
+}
+
+// ── Nodes ─────────────────────────────────────────────────────────────────────
+
+let _discoveryReloadTimer = null;
+
+async function loadNodes() {
+  document.getElementById('node-list-inner').innerHTML =
+    '<div style="padding:14px;font-size:0.73rem;color:#333;">Scanning mesh…</div>';
+  const [r, bc] = await Promise.all([
+    apiFetch('/mesh-config/nodes'),
+    apiFetch('/mesh-config/ble/cache'),
+  ]);
+  if (!r) return;
+  if (bc && bc.cache) _bleCache = bc.cache;
+  _nodes = r.nodes;
+  renderNodes();
+  populateInspect();
+  logInfo(`Loaded ${_nodes.length} nodes (${_nodes.filter(n=>n.reachable).length} TCP-reachable, ${_nodes.filter(n=>n.on_mesh&&!n.reachable).length} mesh-only)`);
+
+  // If backend kicked off a NEW discovery run, schedule one auto-reload to pick up results.
+  // discovery_pending is only true when nodes were actually queued (not on cooldown).
+  if (r.discovery_pending && !_discoveryReloadTimer) {
+    _discoveryReloadTimer = setTimeout(async () => {
+      _discoveryReloadTimer = null;
+      await loadNodes();
+    }, 20000);
+  }
+}
+
+const MESH_OFFLINE_SECS = 600;  // 10 min ghost threshold
+
+function isMeshStale(nd) {
+  if (!nd.on_mesh || nd.reachable || nd.ip) return false;
+  return !nd.last_heard || (Date.now() / 1000 - nd.last_heard) > MESH_OFFLINE_SECS;
+}
+
+function isBleOnly(nd) {
+  if (nd.is_self || nd.reachable || nd.ip) return false;
+  if (!nd.ble_address) return false;
+  // No mesh presence at all, OR on mesh but stale (effectively unreachable via LoRa)
+  return !nd.on_mesh || isMeshStale(nd);
+}
+
+function isOffline(nd) {
+  if (nd.is_self || nd.reachable) return false;
+  if (isBleOnly(nd)) return false;       // BLE-only = reachable via BLE
+  if (nd.ip) return true;
+  return isMeshStale(nd);
+}
+
+function dotClass(nd) {
+  if (nd.is_self)                        return 'self';
+  if (nd.reachable)                      return 'tcp';
+  if (nd.on_mesh && !isMeshStale(nd))    return 'mesh';
+  if (isBleOnly(nd))                     return 'ble';
+  return 'offline';
+}
+
+function dotTitle(nd) {
+  if (nd.is_self)   return 'This hub';
+  if (nd.reachable) return `TCP: ${nd.ip}`;
+  if (nd.on_mesh)   return 'Mesh only — no IP configured';
+  return 'Offline / unreachable';
+}
+
+// Group collapse state (persisted by group id)
+const _groupCollapsed = { ip: false, mesh: true };
+
+function toggleGroup(groupId) {
+  _groupCollapsed[groupId] = !_groupCollapsed[groupId];
+  const hdr  = document.getElementById(`grp-hdr-${groupId}`);
+  const body = document.getElementById(`grp-body-${groupId}`);
+  if (_groupCollapsed[groupId]) {
+    hdr.classList.add('collapsed');
+    body.classList.add('collapsed');
+  } else {
+    hdr.classList.remove('collapsed');
+    body.classList.remove('collapsed');
+  }
+}
+
+function _makeNodeRow(nd) {
+  const offline = isOffline(nd);
+  const row = document.createElement('div');
+  row.className = 'node-row' + (_selected.has(nd.key) ? ' selected' : '') + (offline ? ' node-offline' : '');
+  row.dataset.key = nd.key;
+  row.onclick = offline ? null : () => toggleNode(nd.key, row);
+
+  const dc      = dotClass(nd);
+  const ipHtml  = nd.ip ? `<br><span class="node-ip">${nd.ip === 'localhost' ? '127.0.0.1' : nd.ip}</span>` : '';
+  let   tagHtml = '';
+  if (nd.is_self)                tagHtml = `<br><span class="node-tag self">this hub</span>`;
+  else if (isOffline(nd))        tagHtml = `<br><span class="node-tag offline">offline</span>`;
+  else if (isBleOnly(nd))        tagHtml = `<br><span class="node-tag ble-only">BLE only</span>`;
+  else if (nd.on_mesh && !nd.ip) tagHtml = `<br><span class="node-tag mesh">&#128268; mesh admin</span>`;
+
+  // BLE cache dot (blue = cached address, green = recently scanned)
+  const bleEntry = _bleCache[nd.node_id] || _bleCache[nd.key];
+  let bleDot = '';
+  if (bleEntry) {
+    const age = Date.now()/1000 - (bleEntry.last_seen || 0);
+    const cls = age < 120 ? 'scanned' : 'cached';
+    bleDot = `<span class="ble-dot ${cls}" title="BLE: ${bleEntry.ble_name||bleEntry.address}"></span>`;
+  }
+
+  // Escape key for inline onclick (handle ! prefix in node_id keys)
+  const safeKey = nd.key.replace(/'/g, "\\'");
+  row.innerHTML = `
+    ${offline ? '<div class="node-checkbox-spacer"></div>' : `<input type="checkbox" ${_selected.has(nd.key) ? 'checked' : ''}
+      onclick="event.stopPropagation();toggleNode('${safeKey}',this.closest('.node-row'))">`}
+    <div class="node-info">
+      <div class="node-name">${nd.name}${bleDot}</div>
+      <div class="node-sub">${nd.node_id || ''}${ipHtml}${tagHtml}</div>
+    </div>
+    <div class="node-dot ${dc}" title="${dotTitle(nd)}"></div>
+  `;
+  return row;
+}
+
+function renderNodes() {
+  const el = document.getElementById('node-list-inner');
+  el.innerHTML = '';
+
+  const nodeSort = (a, b) => (isOffline(a) - isOffline(b)) || a.name.localeCompare(b.name);
+
+  const ipNodes   = _nodes.filter(nd => nd.reachable || nd.is_self || nd.ip).sort(nodeSort);
+  const meshNodes = _nodes.filter(nd => !nd.reachable && !nd.is_self && !nd.ip && nd.on_mesh && !isBleOnly(nd)).sort(nodeSort);
+  const bleNodes  = _nodes.filter(nd => isBleOnly(nd)).sort((a,b) => a.name.localeCompare(b.name));
+
+  function makeGroup(groupId, label, nodes) {
+    if (!nodes.length) return;
+    const collapsed = _groupCollapsed[groupId];
+
+    const hdr = document.createElement('div');
+    hdr.className = 'node-group-hdr' + (collapsed ? ' collapsed' : '');
+    hdr.id = `grp-hdr-${groupId}`;
+    hdr.onclick = () => toggleGroup(groupId);
+    hdr.innerHTML = `
+      <span class="grp-arrow">&#9660;</span>
+      ${label}
+      <span class="grp-count">${nodes.length}</span>
+    `;
+
+    const body = document.createElement('div');
+    body.className = 'node-group-body' + (collapsed ? ' collapsed' : '');
+    body.id = `grp-body-${groupId}`;
+    nodes.forEach(nd => body.appendChild(_makeNodeRow(nd)));
+
+    el.appendChild(hdr);
+    el.appendChild(body);
+  }
+
+  makeGroup('ip',   'IP-REACHABLE', ipNodes);
+  makeGroup('mesh', 'MESH ONLY',    meshNodes);
+  makeGroup('ble',  'BLE ONLY',     bleNodes);
+
+  updateCount();
+}
+
+function toggleNode(key, row) {
+  if (_selected.has(key)) {
+    _selected.delete(key);
+    row.classList.remove('selected');
+    row.querySelector('input').checked = false;
+  } else {
+    _selected.add(key);
+    row.classList.add('selected');
+    row.querySelector('input').checked = true;
+  }
+  updateCount();
+}
+
+function toggleSelectAll() {
+  const all = _nodes.map(n => n.key);
+  const allSel = all.every(k => _selected.has(k));
+  if (allSel) _selected.clear();
+  else all.forEach(k => _selected.add(k));
+  renderNodes();
+}
+
+function updateCount() {
+  const count = _selected.size;
+  document.getElementById('node-count').textContent = `${count} node${count!==1?'s':''} selected`;
+  const btn = document.getElementById('apply-btn');
+  const st  = document.getElementById('apply-status');
+  if (count === 0) {
+    btn.disabled = true;
+    st.textContent = 'Select nodes to configure';
+    return;
+  }
+  // Enable button for any selection — backend reports skip for mesh-only nodes
+  btn.disabled = false;
+  const names    = [..._selected].map(k => _nodes.find(nd => nd.key===k)?.name || k);
+  const tcpCount  = [..._selected].filter(k => { const nd = _nodes.find(nd2=>nd2.key===k); return nd&&(nd.reachable||nd.is_self); }).length;
+  const meshCount = count - tcpCount;
+  const note = meshCount > 0 ? ` · ${meshCount} via mesh` : '';
+  st.textContent = names.join(', ') + note;
+
+  // Enable BLE key button if any selected nodes have cached BLE addresses
+  const keyBtn = document.getElementById('ble-key-btn');
+  if (keyBtn && !keyBtn.disabled) return; // already enabled from scan
+  if (keyBtn) {
+    const hasBle = [..._selected].some(k => {
+      const nd = _nodes.find(n => n.key === k);
+      return nd && (_bleCache[nd.node_id] || _bleCache[nd.key]);
+    });
+    keyBtn.disabled = !hasBle;
+  }
+}
+
+// ── Preset toggle ─────────────────────────────────────────────────────────────
+
+function togglePresetMode() {
+  const use = document.getElementById('use-preset').checked;
+  document.getElementById('preset-row').style.display  = use ? '' : 'none';
+  document.getElementById('custom-lora').style.display = use ? 'none' : '';
+}
+
+// ── BLE bootstrap ─────────────────────────────────────────────────────────────
+
+async function scanBLE() {
+  const btn = document.getElementById('ble-scan-btn');
+  const st  = document.getElementById('ble-status');
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  st.textContent  = 'Scanning 10s…';
+  logInfo('BLE scan started (10s)…');
+  const r = await apiFetch('/mesh-config/ble/scan', 'POST', {});
+  btn.disabled = false;
+  btn.textContent = 'Scan';
+  if (!r) { st.textContent = 'Scan failed'; return; }
+  _bleCache = r.cache || {};
+  const n = r.found ? r.found.length : 0;
+  st.textContent = n ? `${n} radio(s) in range` : 'No radios found';
+  if (n) logOk(`BLE: found ${n} device(s): ${r.found.map(d=>d.long_name||d.ble_address).join(', ')}`);
+  if (r.unmatched && r.unmatched.length)
+    logInfo(`BLE: ${r.unmatched.length} unmatched device(s)`);
+  document.getElementById('ble-key-btn').disabled = n === 0;
+  renderNodes(); // refresh BLE dots
+}
+
+async function pushAdminKey() {
+  if (_selected.size === 0) { logInfo('BLE bootstrap: select nodes first'); return; }
+  const btn = document.getElementById('ble-key-btn');
+  const st  = document.getElementById('ble-status');
+  btn.disabled = true;
+  st.textContent = 'Pushing admin key…';
+  logInfo(`Pushing hub admin key to ${_selected.size} node(s) via BLE…`);
+  const r = await apiFetch('/mesh-config/batch/lora', 'POST', {
+    node_keys: [..._selected],
+    method: 'ble',
+    register_admin_key: true,
+  });
+  btn.disabled = false;
+  if (r) {
+    r.results.forEach(res => res.ok
+      ? logOk(`${res.name}: ${res.message}`)
+      : logErr(`${res.name}: ${res.message}`));
+    const ok = r.results.filter(x=>x.ok).length;
+    st.textContent = `Done — ${ok}/${r.results.length} succeeded`;
+  } else {
+    st.textContent = 'Failed';
+  }
+}
+
+// ── Apply RF config ───────────────────────────────────────────────────────────
+
+async function applyLora() {
+  if (_selected.size === 0) return;
+  const usePreset = document.getElementById('use-preset').checked;
+  const payload   = { node_keys: [..._selected], use_preset: usePreset };
+
+  if (usePreset) {
+    payload.modem_preset = parseInt(document.getElementById('modem-preset').value);
+  } else {
+    const sf = document.getElementById('spread-factor').value;
+    const bw = document.getElementById('bandwidth').value;
+    const cr = document.getElementById('coding-rate').value;
+    if (sf && sf!=='0') payload.spread_factor = parseInt(sf);
+    if (bw && bw!=='0') payload.bandwidth     = parseInt(bw);
+    if (cr && cr!=='0') payload.coding_rate   = parseInt(cr);
+  }
+
+  const txp = document.getElementById('tx-power').value;
+  if (txp !== '') payload.tx_power = parseInt(txp);
+  const hl = document.getElementById('hop-limit').value;
+  if (hl !== '') payload.hop_limit = parseInt(hl);
+  payload.sx126x_rx_boosted_gain = document.getElementById('rx-boost').checked;
+  payload.override_duty_cycle    = document.getElementById('override-duty').checked;
+
+  logInfo(`Applying RF config via mesh to ${_selected.size} node(s)…`);
+  const btn = document.getElementById('apply-btn');
+  btn.disabled = true;
+
+  const r = await apiFetch('/mesh-config/batch/lora', 'POST', payload);
+  if (r) r.results.forEach(res => res.ok ? logOk(`${res.name}: ${res.message}`) : logErr(`${res.name}: ${res.message}`));
+  btn.disabled = false;
+  updateCount();
+}
+
+// ── Apply identity ────────────────────────────────────────────────────────────
+
+async function applyIdentity() {
+  if (_selected.size === 0) { alert('Select a node first.'); return; }
+  if (_selected.size > 1)   { alert('Select only one node for identity changes — you don\'t want multiple nodes with the same name.'); return; }
+  const ln = document.getElementById('long-name').value.trim()  || null;
+  const sn = document.getElementById('short-name').value.trim() || null;
+  if (!ln && !sn) { alert('Enter a long or short name.'); return; }
+
+  const key  = [..._selected][0];
+  const name = _nodes.find(n => n.key === key)?.name || key;
+  logInfo(`Applying identity to ${name}…`);
+  const r = await apiFetch('/mesh-config/batch/identity', 'POST',
+    {node_keys:[key], long_name:ln, short_name:sn});
+  if (r) r.results.forEach(res => res.ok ? logOk(`${res.name}: ${res.message}`) : logErr(`${res.name}: ${res.message}`));
+}
+
+// ── Confirm modal ─────────────────────────────────────────────────────────────
+
+const ACTION_META = {
+  reboot: {
+    icon: '⚠️', title: 'REBOOT NODES', warning: null, danger: false,
+    body: 'The following nodes will reboot in 3 seconds. They will rejoin the mesh automatically.',
+    ok: 'Confirm Reboot', typeWord: null,
+  },
+  dbreset: {
+    icon: '⚠️', title: 'NODE DB RESET', warning: 'THIS IS NOT EASILY RECOVERABLE', danger: false,
+    body: 'The neighbor database will be wiped. Nodes must reacquire all peers via live LoRa traffic. In a sparse network this can take minutes.',
+    ok: 'Confirm DB Reset', typeWord: null,
+  },
+  factory_reset: {
+    icon: '☠️', title: 'FACTORY RESET', warning: 'THIS IS IRREVERSIBLE — ALL CONFIG WILL BE WIPED',
+    danger: true,
+    body: 'All configuration (LoRa settings, channels, keys, owner info) will be erased. Nodes cannot recover without manual reconfiguration.\n\nType RESET below to confirm.',
+    ok: 'I Understand — FACTORY RESET', typeWord: 'RESET',
+  },
+};
+
+function confirmAction(action) {
+  if (_selected.size === 0) { alert('Select at least one node.'); return; }
+  const meta  = ACTION_META[action];
+  if (!meta) { runAction(action); return; }
+
+  const names = [..._selected].map(k => _nodes.find(n=>n.key===k)?.name || k);
+  _pendingAction = {action, keys:[..._selected], names};
+
+  const box = document.getElementById('confirm-box');
+  box.className = 'confirm-box' + (meta.danger ? ' danger' : '');
+  document.getElementById('confirm-icon').textContent   = meta.icon;
+  document.getElementById('confirm-title').textContent  = meta.title;
+  document.getElementById('confirm-warning').textContent= meta.warning || '';
+  document.getElementById('confirm-body').textContent   = meta.body;
+
+  const nl = document.getElementById('confirm-node-list');
+  nl.innerHTML = names.map(n=>`<div>• ${n}</div>`).join('');
+
+  const tr = document.getElementById('confirm-type-row');
+  const ti = document.getElementById('confirm-type-input');
+  if (meta.typeWord) {
+    tr.style.display = 'block';
+    ti.value = '';
+    document.getElementById('confirm-ok').disabled = true;
+  } else {
+    tr.style.display = 'none';
+    document.getElementById('confirm-ok').disabled = false;
+  }
+  document.getElementById('confirm-ok').textContent = meta.ok;
+  document.getElementById('confirm-overlay').classList.add('visible');
+  if (meta.typeWord) ti.focus();
+}
+
+function checkTypeConfirm() {
+  const meta = ACTION_META[_pendingAction?.action];
+  const val  = document.getElementById('confirm-type-input').value.trim().toUpperCase();
+  document.getElementById('confirm-ok').disabled = val !== meta?.typeWord;
+}
+
+function closeConfirm() {
+  document.getElementById('confirm-overlay').classList.remove('visible');
+  _pendingAction = null;
+}
+
+async function executeConfirmed() {
+  if (!_pendingAction) return;
+  const {action, keys, names} = _pendingAction;
+  closeConfirm();
+  logInfo(`${action.toUpperCase()} → ${names.join(', ')}`);
+  const r = await apiFetch('/mesh-config/batch/action', 'POST', {node_keys:keys, action});
+  if (r) r.results.forEach(res => res.ok ? logOk(`${res.name}: ${res.message}`) : logErr(`${res.name}: ${res.message}`));
+}
+
+// NodeInfo is non-destructive — no confirm needed
+async function runAction(action) {
+  if (_selected.size === 0) { alert('Select at least one node.'); return; }
+  const keys = [..._selected];
+  logInfo(`${action.toUpperCase()} → ${keys.length} node(s)`);
+  const r = await apiFetch('/mesh-config/batch/action', 'POST', {node_keys:keys, action});
+  if (r) r.results.forEach(res => res.ok ? logOk(`${res.name}: ${res.message}`) : logErr(`${res.name}: ${res.message}`));
+}
+
+// ── Inspect ───────────────────────────────────────────────────────────────────
+
+function populateInspect() {
+  const sel = document.getElementById('inspect-target');
+  const tcp  = _nodes.filter(n => n.reachable || n.is_self);
+  const mesh = _nodes.filter(n => !n.reachable && !n.is_self && n.on_mesh);
+  let html = tcp.map(n => `<option value="${n.key}">${n.name}</option>`).join('');
+  if (mesh.length) {
+    html += `<optgroup label="── mesh only (cached) ──">`;
+    html += mesh.map(n => `<option value="${n.key}">${n.name}</option>`).join('');
+    html += `</optgroup>`;
+  }
+  sel.innerHTML = html;
+}
+
+function _ikv(label, value, cls='') {
+  return `<div class="inspect-kv"><span class="ik">${label}</span><span class="iv${cls?' '+cls:''}">${value}</span></div>`;
+}
+function _ikvFull(label, value, cls='') {
+  return `<div class="inspect-kv full"><span class="ik">${label}</span><span class="iv${cls?' '+cls:''}">${value}</span></div>`;
+}
+function _ihdr(t) { return `<div class="inspect-section-hdr">${t}</div>`; }
+
+async function inspectNode() {
+  const key = document.getElementById('inspect-target').value;
+  const el  = document.getElementById('inspect-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div class="inspect-grid"><div class="inspect-note">Connecting…</div></div>';
+
+  const r = await apiFetch(`/mesh-config/node/${encodeURIComponent(key)}/lora`);
+  if (!r) { el.innerHTML = '<div class="inspect-grid"><div class="inspect-note">Failed to connect.</div></div>'; return; }
+
+  const battStr = r.battery_pct === 'POWERED' ? '⚡ POWERED'
+                : r.battery_pct != null        ? `${r.battery_pct}%`
+                : '—';
+  const battCls = r.battery_pct === 'POWERED' ? 'powered'
+                : r.battery_pct != null && r.battery_pct < 20 ? 'warn' : '';
+
+  const pwrParts = [];
+  if (r.pwr_is_power_saving)  pwrParts.push('pwr-save ON');
+  if (r.pwr_screen_on_secs)   pwrParts.push(`screen ${r.pwr_screen_on_secs}s`);
+  if (r.pwr_wait_bt_secs)     pwrParts.push(`BT ${r.pwr_wait_bt_secs}s`);
+  if (r.pwr_mesh_sds_timeout) pwrParts.push(`SDS ${r.pwr_mesh_sds_timeout}s`);
+  if (r.pwr_min_wake_secs)    pwrParts.push(`wake ${r.pwr_min_wake_secs}s`);
+
+  const chHtml = (r.channels && r.channels.length)
+    ? r.channels.map(c => c.error
+        ? `<div class="inspect-ch"><span class="ich-idx">ERR</span><span class="ich-name" style="color:#ef5350">${c.error}</span></div>`
+        : `<div class="inspect-ch">
+             <span class="ich-idx">[${c.index}]</span>
+             <span class="ich-star">${c.role==='PRIMARY'?'★':'·'}</span>
+             <span class="ich-name">${c.name}</span>
+             <span class="ich-psk">PSK: ${c.psk}</span>
+             ${c.uplink||c.downlink?`<span class="ich-updown">↑${c.uplink?'on':'off'} ↓${c.downlink?'on':'off'}</span>`:''}
+           </div>`).join('')
+    : `<div class="inspect-note">(no channels)</div>`;
+
+  const hopVal = (r.hop_limit != null && r.hop_limit > 0) ? r.hop_limit : '3 (default)';
+  const meshNote = r.mesh_only
+    ? `<div class="inspect-note">&#9432; Mesh-only node — LoRa config not readable; showing cached data.</div>` : '';
+
+  el.innerHTML = `<div class="inspect-grid">
+    ${meshNote}
+    ${_ihdr('IDENTITY')}
+    ${_ikv('Node', `${r.long_name} (${r.short_name})`)}
+    ${_ikv('Role', r.role || '—')}
+
+    ${_ihdr('POWER / HEALTH')}
+    ${_ikv('Battery', battStr, battCls)}
+    ${_ikv('Voltage', r.voltage_v != null ? r.voltage_v+'V' : '—')}
+    ${_ikv('Uptime', r.uptime || '—')}
+    ${_ikv('Chan Util', r.channel_util_pct != null ? r.channel_util_pct+'%' : '—')}
+    ${_ikv('Air TX', r.air_util_tx_pct != null ? r.air_util_tx_pct+'%' : '—')}
+    ${_ikvFull('Power Cfg', pwrParts.length ? pwrParts.join('  ·  ') : 'defaults', 'muted')}
+
+    ${_ihdr('CHANNELS')}
+    ${chHtml}
+
+    ${_ihdr('RF / LORA')}
+    ${_ikv('Use Preset', r.use_preset != null ? String(r.use_preset) : '—')}
+    ${_ikv('Preset', r.modem_preset_name ? `${r.modem_preset_name} (${r.modem_preset})` : '—')}
+    ${_ikv('Spread Factor', r.spread_factor || '(preset)')}
+    ${_ikv('Bandwidth', r.bandwidth || '(preset)')}
+    ${_ikv('Coding Rate', r.coding_rate || '(preset)')}
+    ${_ikv('TX Power', r.tx_power ? r.tx_power+' dBm' : 'max')}
+    ${_ikv('Hop Limit', hopVal)}
+    ${_ikv('RX Boost', r.sx126x_rx_boosted_gain != null ? String(r.sx126x_rx_boosted_gain) : '—')}
+    ${_ikv('Duty Cycle', r.override_duty_cycle != null ? String(r.override_duty_cycle) : '—')}
+    ${_ikv('Channel #', r.channel_num ?? '—')}
+  </div>`;
+
+  // Pre-fill form (TCP nodes only)
+  if (!r.mesh_only) {
+    document.getElementById('use-preset').checked    = r.use_preset;
+    document.getElementById('modem-preset').value    = r.modem_preset;
+    document.getElementById('tx-power').value        = r.tx_power || '';
+    document.getElementById('hop-limit').value       = (r.hop_limit && r.hop_limit > 0) ? r.hop_limit : '';
+    document.getElementById('rx-boost').checked      = r.sx126x_rx_boosted_gain;
+    document.getElementById('override-duty').checked = r.override_duty_cycle;
+    if (!r.use_preset) {
+      document.getElementById('spread-factor').value = r.spread_factor;
+      document.getElementById('bandwidth').value     = r.bandwidth;
+      document.getElementById('coding-rate').value   = r.coding_rate;
+    }
+    togglePresetMode();
+  }
+  logInfo(`Config loaded from ${r.long_name || key}`);
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+
+function _log(msg, cls) {
+  const el  = document.getElementById('log-inner');
+  const now = new Date().toLocaleTimeString('en', {hour12:false});
+  const div = document.createElement('div');
+  div.className = `log-entry ${cls}`;
+  div.innerHTML = `<span class="log-time">${now}</span>${msg}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+const logOk   = m => _log(m, 'log-ok');
+const logErr  = m => _log(m, 'log-err');
+const logInfo = m => _log(m, 'log-info');
+function clearLog() { document.getElementById('log-inner').innerHTML = ''; }
+
+// ── API helper ────────────────────────────────────────────────────────────────
+
+async function apiFetch(path, method='GET', body=null) {
+  try {
+    const opts = {method, headers:{'Authorization':`Bearer ${_token}`,'Content-Type':'application/json'}};
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(`${API}${path}`, opts);
+    if (r.status === 401) { doLogout(); return null; }
+    if (!r.ok) {
+      const e = await r.json().catch(()=>({detail:r.statusText}));
+      logErr(`API error: ${e.detail||r.statusText}`);
+      return null;
+    }
+    return await r.json();
+  } catch(e) { logErr(`Network: ${e.message}`); return null; }
+}
+
+// ── Theme & hub badge ─────────────────────────────────────────────────────────
+
+function toggleTheme() {
+  const nxt = document.documentElement.dataset.theme === 'day' ? '' : 'day';
+  document.documentElement.dataset.theme = nxt;
+  localStorage.setItem('jtak_theme', nxt || 'night');
+}
+
+fetch('/jtak/api/status').then(r=>r.json()).then(s=>{
+  const b = document.getElementById('mc-hub-badge');
+  if (b) b.textContent = (s.hub_name||s.hub_id||'').toUpperCase();
+}).catch(()=>{});
+
+// ── Dismiss confirm on Escape ─────────────────────────────────────────────────
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeConfirm(); });
+
+init();
+</script>
+</body>
+</html>

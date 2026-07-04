@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jTAK — RF History</title>
+  <link rel="icon" type="image/png" href="/jtak/assets/shield.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="/jtak/css/jtak.css">
+  <link rel="stylesheet" href="/jtak/history/css/history.css">
+  <script>(function(){var t=localStorage.getItem('jtak_theme');if(t==='day')document.documentElement.dataset.theme='day';})();</script>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header id="hist-header">
+  <nav class="tab-bar">
+    <a href="/jtak/" class="tab"><span class="tab-icon">&#9679;</span> LIVE</a>
+    <a href="/jtak/history.html" class="tab active"><span class="paw-icon">🐾</span> Tracks</a>
+    <a href="/jtak/iap.html" class="tab"><span class="tab-icon">🔥</span> Incidents</a>
+    <a href="/jtak/mesh-config.html" class="tab"><span class="tab-icon">&#128268;</span> Mesh</a>
+  </nav>
+
+
+  <div class="spacer"></div>
+
+  <div class="ctrl-group">
+    <label class="ctrl-label">DATE</label>
+    <select id="date-select" class="ctrl-select">
+      <option value="">Loading…</option>
+    </select>
+  </div>
+
+  <!-- Time window selector -->
+  <div class="ctrl-group" id="window-group" style="display:none">
+    <label class="ctrl-label">FROM</label>
+    <input id="win-start" type="time" class="ctrl-time">
+    <label class="ctrl-label">TO</label>
+    <input id="win-end" type="time" class="ctrl-time">
+    <button id="btn-apply-window" class="apply-btn" title="Apply time window">APPLY</button>
+  </div>
+
+  <div class="mode-group">
+    <button id="btn-replay"  class="mode-btn active" title="Playback mode">&#9654; REPLAY</button>
+    <button id="btn-heatmap" class="mode-btn"         title="Heatmap mode">&#9632; HEATMAP</button>
+  </div>
+
+  <div id="load-status" class="load-status">Select a date</div>
+  <button id="theme-toggle" class="theme-toggle-btn" title="Switch to Day mode">&#9728;</button>
+</header>
+
+<!-- ── Map (direct child of body for CSS grid) ─────────────────────────── -->
+<div id="hist-map-wrap">
+  <div id="hist-map"></div>
+  <button id="btn-chat-bubble" class="chat-bubble-btn" title="RF Analyst AI">&#129302;</button>
+</div>
+
+<!-- ── Sidebar (direct child of body for CSS grid) ─────────────────────── -->
+<aside id="hist-sidebar">
+
+  <!-- Session stats (accordion, starts collapsed) -->
+  <div id="session-stats" class="sidebar-section accordion" style="display:none">
+    <div class="section-header">SESSION SUMMARY <span class="acc-arrow">▼</span></div>
+    <div id="stats-content"></div>
+  </div>
+
+  <!-- Contact log -->
+  <div id="contact-log-section" class="sidebar-section">
+    <div class="section-header">
+      CONTACTS
+    </div>
+    <div id="contact-body">
+      <div id="contact-list"></div>
+    </div>
+  </div>
+
+</aside>
+
+<button id="sidebar-toggle" class="sidebar-toggle-btn" title="Collapse sidebar">▶</button>
+
+<!-- ── Timeline ─────────────────────────────────────────────────────────── -->
+<div id="timeline-bar">
+  <div id="tl-controls">
+    <button id="tl-back"  class="tl-btn" title="Back 5 min">&#9664;&#9664;</button>
+    <button id="tl-play"  class="tl-btn primary" title="Play/Pause">&#9654;</button>
+    <button id="tl-stop"  class="tl-btn" title="Stop / Reset">&#9632;</button>
+    <button id="tl-fwd"   class="tl-btn" title="Fwd 5 min">&#9654;&#9654;</button>
+  </div>
+
+  <div id="tl-slider-wrap">
+    <span id="tl-start-label" class="tl-time">--:--</span>
+    <input id="tl-slider" type="range" min="0" max="1000" value="0">
+    <span id="tl-end-label" class="tl-time">--:--</span>
+  </div>
+
+  <div id="tl-now">
+    <span class="tl-label">NOW</span>
+    <span id="tl-current">--:--:--</span>
+  </div>
+
+  <div id="speed-group">
+    <button class="speed-btn" data-speed="1">1×</button>
+    <button class="speed-btn" data-speed="5">5×</button>
+    <button class="speed-btn active" data-speed="30">30×</button>
+    <button class="speed-btn" data-speed="120">120×</button>
+  </div>
+</div>
+
+<!-- ── RF Analyst Modal ─────────────────────────────────────────────────────── -->
+<div id="chat-modal" class="chat-modal hidden" role="dialog" aria-modal="true" aria-label="RF Analyst">
+  <div class="chat-panel">
+    <div class="chat-panel-header">
+      <span class="chat-panel-title">&#129302; RF ANALYST</span>
+      <div class="chat-panel-status" id="chat-status"></div>
+      <button id="chat-modal-close" class="chat-close-btn" title="Close">&#10005;</button>
+    </div>
+    <div id="chat-messages" class="chat-messages"></div>
+    <div id="chat-image-preview" class="chat-image-preview hidden"></div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" class="chat-textarea" rows="2"
+        placeholder="Ask about this RF session… Shift+Enter for newline, Ctrl+V to paste a screenshot"></textarea>
+      <button id="chat-send" class="chat-send-btn" title="Send (Enter)">&#10148;</button>
+    </div>
+  </div>
+</div>
+
+<script src="/jtak/js/theme.js"></script>
+<script type="module" src="/jtak/history/js/app.js"></script>
+</body>
+</html>

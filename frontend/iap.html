@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jTAK — IAP</title>
+  <link rel="icon" type="image/png" href="/jtak/assets/shield.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/jtak/css/jtak.css">
+  <link rel="stylesheet" href="/jtak/css/iap.css">
+  <script>(function(){var t=localStorage.getItem('jtak_theme');if(t==='day')document.documentElement.dataset.theme='day';})();</script>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header id="iap-header">
+
+  <nav class="tab-bar">
+    <a href="/jtak/" class="tab"><span class="tab-icon">&#9679;</span> LIVE</a>
+    <a href="/jtak/history.html" class="tab"><span class="paw-icon">🐾</span> Tracks</a>
+    <a href="/jtak/iap.html" class="tab active"><span class="tab-icon">🔥</span> Incidents</a>
+    <a href="/jtak/mesh-config.html" class="tab"><span class="tab-icon">&#128268;</span> Mesh</a>
+  </nav>
+
+  <div class="spacer"></div>
+
+  <div id="iap-status" class="iap-status">Loading…</div>
+  <button id="theme-toggle" class="theme-toggle-btn" title="Switch to Day mode">&#9728;</button>
+</header>
+
+<!-- ── Main layout ─────────────────────────────────────────────────────── -->
+<div id="iap-body">
+
+  <!-- Left: incident list -->
+  <aside id="iap-sidebar">
+    <div class="iap-section-header">
+      ACTIVE INCIDENTS
+      <span id="inc-count" class="count-badge">0</span>
+      <button id="btn-refresh" class="iap-refresh-btn" title="Refresh incidents">&#8635;</button>
+    </div>
+    <div class="iap-search-wrap">
+      <input id="inc-search" class="iap-search" type="text" placeholder="Filter by name or state…" autocomplete="off">
+    </div>
+    <div id="incident-list"></div>
+  </aside>
+
+  <!-- Right: detail panel -->
+  <main id="iap-detail">
+    <div id="iap-placeholder" class="iap-placeholder">
+      &#128293; Select an incident to view IAP details
+    </div>
+
+    <!-- Incident detail (hidden until selected) -->
+    <div id="iap-inc-detail" style="display:none">
+
+      <!-- Title block -->
+      <div class="inc-title-block">
+        <div class="inc-name" id="det-name">—</div>
+        <div class="inc-meta" id="det-meta">—</div>
+        <div class="inc-badges" id="det-badges"></div>
+      </div>
+
+      <!-- Stats row -->
+      <div class="inc-stats-row">
+        <div class="inc-stat">
+          <div class="inc-stat-label">ACRES</div>
+          <div class="inc-stat-val" id="det-acres">—</div>
+        </div>
+        <div class="inc-stat">
+          <div class="inc-stat-label">CONTAINED</div>
+          <div class="inc-stat-val" id="det-contained">—</div>
+        </div>
+        <div class="inc-stat">
+          <div class="inc-stat-label">DISTANCE</div>
+          <div class="inc-stat-val" id="det-dist">—</div>
+        </div>
+        <div class="inc-stat">
+          <div class="inc-stat-label">DISPATCH CTR</div>
+          <div class="inc-stat-val" id="det-disp">—</div>
+        </div>
+      </div>
+
+      <!-- Links -->
+      <div class="inc-links-row" id="det-links"></div>
+
+      <!-- ICS-205 Comms section -->
+      <div class="iap-section">
+        <div class="iap-section-header">
+          <span class="section-icon">&#128225;</span> ICS-205 — COMMUNICATIONS (Great Basin 2026)
+          <select id="freq-zone-select" class="freq-zone-select">
+            <option value="">Select zone…</option>
+          </select>
+        </div>
+        <div id="freq-table-wrap">
+          <div class="iap-hint">Select a dispatch zone above to view fire frequencies.</div>
+        </div>
+      </div>
+
+      <!-- ICS-206 Medical section -->
+      <div class="iap-section">
+        <div class="iap-section-header"><span class="section-icon med-cross">&#10010;</span> ICS-206 — MEDICAL (Nearest Trauma Centers)</div>
+        <div id="trauma-table-wrap">
+          <div class="iap-hint">Loading trauma centers…</div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script src="/jtak/js/theme.js"></script>
+<script src="/jtak/js/iap.js"></script>
+</body>
+</html>
