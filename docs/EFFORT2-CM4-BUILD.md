@@ -68,10 +68,12 @@ From jtak2 recon: OTS installed but not yet configured (own venv `~/.opentakserv
 ## 8. Portable feature: WiFi uplink (from the Meshtastic hubs)
 Built & proven on jtak2 (branch `feature/wifi-uplink`): single-radio concurrent **AP + STA** with eth0-primary / wifi-backup failover, plus a dashboard page to type an SSID/password (Option B, no scan). Reusable on the CM4. Files: `bin/jtak-wifi`, `backend/api/routes_wifi.py`, `frontend/wifi.html`, `config/systemd/jtak-wifi-sta.service`. Key facts: BCM43455 does AP+STA but **same-channel only** (`#channels<=1`); NM autoconnect is unreliable for the dynamically-created `sta0` vif → boot path explicitly `nmcli connection up`s the saved uplink.
 
-## 9. Current status / next action
-- Effort 2 was **pinned pending hardware** (CM4 + Waveshare IO boards on order as of 2026-07-04); HaLow dongles in hand.
-- A **detection spike** on jtak2 confirmed the MM8108 enumerates on USB (`325b:8100`) but needs the Morse driver (Pi OS ships nothing).
-- **Next action when the CM4 arrives:** execute §4 step 1–2 (Pi OS + jTAK restore), then the HaLow driver spike (§5). Tell the Claude session on the CM4: *"Read EFFORT2-CM4-BUILD.md; we're at §8 step N — continue."*
+## 9. Current status / next action (updated 2026-07-05)
+Built this far on host **`mcore1`** (CM4 4GB, Pi OS Bookworm, kernel 6.12.93), fork repo `sgale/jtak-meshcore` at `/opt/jtak`:
+- DONE — **skeleton LIVE:** venv + deps, config-fallback identity (NO meshtasticd), `jtak-api` on :8420, nginx dashboard at `https://192.168.86.52/jtak/` (self-signed cert).
+- DONE — **MVP-A pipeline PROVEN:** `ingest/meshcore_monitor.py` `write_position()` writes to `positions` (`source_type='meshcore'`); a test node flows to `/api/positions` + the map, zero Meshtastic in path. `run()` radio reader is a STUB.
+- **YOUR NEXT ACTION (this session, on mcore1) — finish MVP-A:** attach the MeshCore radio, confirm its companion protocol (serial/BLE frame format), wire `run()` to decode real node positions + RF into `positions`/`rf_metrics`, add `jtak-meshcore.service` (mirror `tactical_monitor.service`), then strip the dormant Meshtastic path. After MVP-A: HaLow driver spike (see §5) — kernel work, done here on-device.
+- Notes: set a real `admin.password` in `config/jtak.yaml` (still `CHANGEME`); a test `meshcore` row is still in the DB (delete anytime); interface pinned; master running memory lives on the `stage` Pi (does NOT travel — this doc is the bridge).
 
 ---
 *Master planning memory lives on the `stage` Pi at `~/.claude/projects/-home-sdg/memory/` (files `project_jtak_hub_roadmap.md`, `changelog_jtak_hub.md`). That memory does NOT travel between machines — this file is the portable handoff. Keep it updated as the build progresses.*
