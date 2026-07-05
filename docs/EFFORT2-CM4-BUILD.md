@@ -23,7 +23,7 @@ This is a **new repo forked from `v1.0-meshtastic`**, NOT a branch (long-lived d
 ## 2. Hardware
 - **Compute:** Raspberry Pi **Compute Module 4 (8 GB)** + Waveshare CM4 IO board + NVMe. 8 GB is required (see §6 — jTAK + OTS co-tenancy).
 - **HaLow:** **Morse Micro MM8108-EKH19** USB dongle (802.11ah, sub-GHz, 1–3 mi hub↔hub). USB id `325b:8100`.
-- **LoRa:** Meshcore-compatible radio (~900 MHz, replacing the Meshtastic radio).
+- **LoRa:** **MeshAdv Pi HAT** (`github.com/chrismyers2000/MeshAdv-Pi-Hat`) — **SX1262** (Ebyte E22-900M30S/M33S, ~900 MHz, **1 W PA up to 33 dBm**) on the Pi's **SPI0** (CLK=GPIO11, MOSI=10, MISO=9; CS=21, RESET=18, BUSY=20, DIO1/IRQ=16, TXEN=13, RXEN=12), plus UART GPS (ATGM336H, PPS→GPIO23) and I2C (GPIO2/3). NOT a USB/BLE companion node — it's a **bare radio the Pi drives over SPI**. ⚠️ **RF coexistence:** its ~900 MHz is the SAME band as the HaLow dongle (§6.3) — now with a 1 W PA in the mix. ⚠️ **CM4 IO board** must host the 40-pin HAT (SPI0 + those GPIOs are present, but it's a CM4 IO board, not a classic Pi — check physical fit).
 
 ## 3. OS decision — Raspberry Pi OS 64-bit (Bookworm) Lite
 Chosen over Ubuntu / OpenWRT because it:
@@ -59,7 +59,7 @@ Pin near Morse's tested kernel (**~6.12.21**) to ease the HaLow build. (The Mesh
 - Runtime dep gotcha: `morse` needs `crc7` (`crc7_be_syndrome_table`). `modules_install` + `depmod` makes `modprobe morse` pull the whole chain (rfkill→cfg80211→mac80211→crc7→dot11ah→morse) automatically.
 - **hostap OpenSSL-3 fix:** Bookworm's OpenSSL 3.0 + hostap's `-Werror` = deprecation build failures. Patched `wpa_supplicant/Makefile` and `hostapd/Makefile` to append `-Wno-error=deprecated-declarations -Wno-error=deprecated` right after the `CFLAGS += $(EXTRA_CFLAGS)` line (must follow `-Werror` to win). Then `cp defconfig .config` (already has `CONFIG_IEEE80211AH=y`) and `make wpa_supplicant_s1g wpa_cli_s1g` / `make hostapd_s1g hostapd_cli_s1g`. Binaries installed to `/usr/local/bin`.
 - **VERIFY status:** ✅ iface appears — `wlan1` = `phy#1`, MAC `0c:bf:74:xx` (Morse OUI, OTP read OK), brings UP clean, no dmesg errors. ✅ driver persistent — installed in `/lib/modules/.../updates/`, auto-loads via `/etc/modules-load.d/morse.conf`. ❌ **link + iperf between two HaLow nodes NOT done — needs a 2nd HaLow node (only one dongle/one Pi here); inherently a two-box test.**
-- **Follow-ups:** (1) **DKMS** — the out-of-tree `.ko` will NOT survive an apt kernel bump; wrap in DKMS so it rebuilds. (2) **Pin iface name → `halow0`** (design rule §6.2) — with wlan0(brcmfmac)+wlan1(morse) the `wlanN` order is non-deterministic across reboots; add a systemd.link by USB path/MAC. (3) SSH here rides `wlan0` (192.168.86.52); eth0 carries internet — keep HaLow work off wlan0.
+- **Follow-ups:** (1) ✅ **DKMS DONE** — source at `/usr/src/morse-1.17.9/` + `dkms.conf`; `dkms status` = `morse/1.17.9, 6.12.93+rpt-rpi-v8: installed`, `AUTOINSTALL=yes` → auto-rebuilds on apt kernel bumps. Modules now load from `/lib/modules/$KVER/updates/dkms/`. Rebuild deps must persist: `git submodule` content is baked into `/usr/src` copy; DKMS `MAKE[0]` carries `CONFIG_MORSE_VENDOR_COMMAND=y`. (2) ✅ **`halow0` rename DONE** — udev rule `/etc/udev/rules.d/70-halow-name.rules` (by MAC `0c:bf:74:00:29:71`); iface is `halow0`, persists across reload. (3) SSH here rides `wlan0` (192.168.86.52); eth0 carries internet — keep HaLow work off wlan0.
 
 ## 6. Design rules (carry these into the fork)
 1. **Backhaul-only routing:** HaLow (`halow0`) is hub↔hub transport — **NEVER a default route.** Route only a dedicated backhaul subnet (e.g. `10.10.0.0/24`). Same principle as the wifi-uplink (default routes only on egress ifaces).
@@ -84,9 +84,35 @@ Built this far on host **`mcore1`** (CM4 4GB, Pi OS Bookworm, kernel 6.12.93), f
 - DONE — **MVP-A pipeline PROVEN:** `ingest/meshcore_monitor.py` `write_position()` writes to `positions` (`source_type='meshcore'`); a test node flows to `/api/positions` + the map, zero Meshtastic in path. `run()` radio reader is a STUB.
 - DONE (2026-07-05) — **HaLow driver + S1G userspace BUILT & LIVE (see §5 RESULTS).** MM8108 dongle → `wlan1` (`phy#1`, Morse OUI MAC), driver 1.17.9 compiled clean on stock 6.12.93 **with no kernel patch**, persistent via `modprobe`/`modules-load.d`. `wpa_supplicant_s1g`/`hostapd_s1g` in `/usr/local/bin`. The feared kernel-rebuild spike was **not needed**.
 - **NEXT ACTIONS (pick up here), two independent tracks:**
-  1. **Finish MVP-A (MeshCore LoRa)** — still the primary Effort-2 goal. Attach the MeshCore radio (NOT plugged in as of this session — only the HaLow dongle is), confirm its companion protocol (serial/BLE frame format), wire `run()` to decode real node positions + RF into `positions`/`rf_metrics`, add `jtak-meshcore.service` (mirror `tactical_monitor.service`), then strip the dormant Meshtastic path.
-  2. **HaLow next steps** — (a) DKMS-wrap `morse.ko` so it survives apt kernel bumps; (b) pin `wlan1`→`halow0` (design rule §6.2); (c) the real test is a **two-node HaLow link + iperf at range** — needs a 2nd HaLow node, so schedule when a second dongle/hub is available; (d) then MVP-B/C (backhaul + Reticulum).
+  1. **Finish MVP-A (MeshCore LoRa)** — still the primary Effort-2 goal. **Architecture confirmed 2026-07-05 (see §9.1):** the HAT is a bare SX1262-on-SPI, so the *Pi itself* runs a MeshCore **companion node** (`pyMC` or `meshcore-linux`, driving the HAT) and jTAK ingests via the **official `meshcore` PyPI lib** (`pip install meshcore`, connects Serial/TCP, async event-driven) — NOT manual frame decoding. Steps: enable SPI (`dtparam=spi=on`, `dtoverlay=spi0-0cs`) + install a companion node stack; fill `meshcore_monitor.py run()` to subscribe to `ADVERTISEMENT`/`CONTACTS`/`CHANNEL_MSG_RECV` events → `write_position()` + messages/RF; add `jtak-meshcore.service`; strip the dormant Meshtastic path. (HAT not physically installed yet — only the HaLow dongle is on USB.)
+  2. **HaLow next steps** — (a) ✅ DKMS done (auto-rebuilds on kernel bump); (b) ✅ `halow0` rename done (udev by-MAC); (c) **← THE open HaLow item:** the real test is a **two-node HaLow link + iperf at range** — needs a 2nd HaLow node, so schedule when a second dongle/hub is available; (d) then MVP-B/C (backhaul + Reticulum).
 - Notes: set a real `admin.password` in `config/jtak.yaml` (still `CHANGEME`); a test `meshcore` row is still in the DB (delete anytime); **this session ran over SSH (rides `wlan0`)** — fine for the out-of-tree module build (no boot risk); master running memory lives on the `stage` Pi (does NOT travel — this doc is the bridge).
+
+## 9.1 MeshCore vs the existing Meshtastic code — architecture, gaps & open scope (research 2026-07-05)
+**Integration model (confirmed):** run a MeshCore **companion node** on the HAT (`pyMC` or `meshcore-linux`) + jTAK consumes the **official `meshcore` PyPI lib** (event-driven, Serial/TCP). jTAK writes zero crypto/mesh code. Forward-compatible with BOTH "channels+messages owned in jTAK's DB" (like the current MT hubs) AND a native **Room Server** later. `pyMC_core` (embed) was the earlier pick but is less mature and would reimplement the stack — rejected in favor of the companion-client lib.
+
+**Position events — CONFIRMED:** `meshcore_py` `EventType` includes `ADVERTISEMENT`, `ADVERT_PATH`, `CONTACTS`, `NEW_CONTACT`, `PATH_UPDATE`, `NEIGHBOURS_RESPONSE`, `TELEMETRY_RESPONSE`, `CHANNEL_MSG_RECV`, `CONTACT_MSG_RECV`. Remote-node positions arrive via adverts→contacts (`adv_lat`/`adv_lon` — verify exact field at wire-time). ⚠️ **CAVEAT:** advert-based + opt-in → **sparser/less frequent than Meshtastic `POSITION_APP`**, and only location-sharing nodes appear on the map.
+
+**Gaps vs the code already built here:**
+| Existing jTAK (Meshtastic) | MeshCore | Verdict |
+|---|---|---|
+| positions (map) | adverts/contacts events | ✅ works, sparser cadence |
+| mesh_messages / channels | `CHANNEL_MSG_RECV` + `send_msg` | ✅ ports |
+| direct messages | per-contact PKI | ✅ upgrade |
+| mesh_send_queue (outbound) | `send_msg`/`MSG_SENT`/`ACK` | ✅ ports |
+| rf_metrics, telemetry | `STATS_RADIO`, `TELEMETRY_RESPONSE` | ✅ partial |
+| **waypoints (OTA pin-drops)** — `routes_waypoints.py` broadcasts over MT mesh | **none in companion protocol** | ❌ **gap → decision (i)** |
+| **`routes_mesh_config.py` (86 KB, MT admin config)** | different model (`CMD_SET_CHANNEL`/`GET_CHANNEL_INFO`/device query) | ❌ **~throwaway → decision (ii)** |
+| `routes_meshtastic_debug.py` | — | ❌ drop |
+| aircraft/weather/fire/atmo/polygons/sensors/IAP/federation/LED | non-mesh data sources | ✅ unaffected |
+
+**Scoping decisions (Sean, 2026-07-05):**
+- **(i) Waypoints — DEFERRED.** Not in MVP-A scope; revisit after the pipeline is live / HAT installed. When picked up: choose hub-local only (jTAK DB → own web clients) OR custom **hub↔hub** sync over a MeshCore data datagram (`CMD_SEND_CHANNEL_DATA_DATAGRAM` 0x3E) — neither renders as a native pin in MeshCore phone apps. Precedent: **MeshCore-TEAM** syncs waypoints over the mesh via its own convention; **MeshCore-Solo** firmware does local nav waypoints — so OTA is feasible as a jTAK-owned layer, just not in the base protocol.
+- **(ii) Config surface — DECIDED: do NOT port the 86 KB MT config UI (*yet*).** Out of scope for MVP-A; MeshCore config is a different model anyway. A minimal MeshCore channel/config page comes later — "yet" ≠ rejected; revisit post-MVP-A.
+
+**MeshCore roadmap re our needs (checked 2026-07):**
+- **Waypoints:** no upstream *companion-protocol* waypoint standard on the roadmap; waypoints live in app/firmware forks (MeshCore-TEAM OTA sync, MeshCore-Solo nav). Treat as jTAK-owned.
+- **TAK/ATAK:** **explicitly NOT on MeshCore's roadmap** (FAQ — MeshCore clients don't repeat, and ATAK is too chatty for the flood/path model; "could change if a repeating client firmware emerges"). BUT a community bridge exists — **`emuehlstein/OpenTAKServer-meshcore`** (OTS fork w/ MeshCore support; ~891 commits but early/experimental, 1★, thin docs). Since we already run **OpenTAKServer** (§7), the realistic TAK path is **MeshCore → OTS → ATAK CoT**, not jTAK speaking CoT itself.
 
 ---
 *Master planning memory lives on the `stage` Pi at `~/.claude/projects/-home-sdg/memory/` (files `project_jtak_hub_roadmap.md`, `changelog_jtak_hub.md`). That memory does NOT travel between machines — this file is the portable handoff. Keep it updated as the build progresses.*
