@@ -42,6 +42,8 @@ Pin near Morse's tested kernel (**~6.12.21**) to ease the HaLow build. (The Mesh
 6. **OpenTAKServer co-tenancy** — see §6.
 
 ## 5. HaLow driver recipe (Pi OS) — the hard part
+> **BEFORE rebuilding the kernel — protect the boot.** A bad kernel can leave `mcore1` unbootable, and git won't help (code is safe on GitHub; the *boot* is the risk). So: back up `/boot` (`sudo cp -a /boot /boot.bak`), install the Morse-patched kernel *alongside* the working one (don't overwrite), keep the current kernel as a fallback, and have console/keyboard access. Do all kernel work locally on `mcore1`, never over SSH from another host.
+
 - **No prebuilt .deb** for the EKH19 on Pi OS — compile from source.
 - Driver: `github.com/MorseMicro/morse_driver`, build with `CONFIG_MORSE_USB=y CONFIG_MORSE_SDIO=n CONFIG_WLAN_VENDOR_MORSE=m`.
 - Firmware: `github.com/MorseMicro/morse-firmware` → `/lib/firmware/morse/`.
