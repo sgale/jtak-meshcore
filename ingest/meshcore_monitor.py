@@ -24,12 +24,13 @@ secret lives there and MUST NOT be committed). Runs under /home/sdg/pymc/venv (t
 venv that has pymc_core + pyserial).
 """
 import asyncio
+import csv
 import logging
 import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import yaml
 
@@ -41,7 +42,14 @@ log = logging.getLogger("meshcore")
 
 CONFIG_PATH = "/opt/jtak/config/jtak.yaml"
 DB_PATH = "/opt/jtak/data/jtak.db"
+LOG_DIR = "/opt/jtak/logs/rf"
 SOURCE_TYPE = "meshcore"
+
+# RF-log columns csv_watcher reads by name; unlisted columns default to None there.
+# We append this same-format CSV so csv_watcher (in the API) owns the positions/
+# rf_metrics writes AND the live WS broadcast + LED + map — full Meshtastic parity.
+RF_CSV_COLUMNS = ["timestamp", "source_type", "node_id", "node_name", "hub_id",
+                  "node_lat", "node_lon", "rssi", "snr", "freq_mhz", "packet_type"]
 
 
 def _cfg() -> dict:
@@ -49,9 +57,10 @@ def _cfg() -> dict:
     with open(CONFIG_PATH) as f:
         full = yaml.safe_load(f)
     mc = full.get("meshcore") or {}
-    # DB path is authoritative from the shared database section when present.
-    global DB_PATH
+    # DB path + RF-log dir are authoritative from the shared config sections.
+    global DB_PATH, LOG_DIR
     DB_PATH = (full.get("database") or {}).get("path", DB_PATH)
+    LOG_DIR = (full.get("logs") or {}).get("base_path", LOG_DIR)
     return {"mc": mc, "hub_name": (full.get("hub") or {}).get("name", "MCORE")}
 
 
@@ -100,34 +109,44 @@ def write_message(direction: str, from_id: str | None, from_name: str | None,
         con.close()
 
 
-def write_rf_metric(source_id: str, source_name: str | None, hub_id: str,
-                    rssi: float | None, snr: float | None, frequency: float | None,
-                    packet_type: str | None) -> None:
-    """Insert one RF observation into `rf_metrics` (RSSI/SNR from the received packet).
+def _rf_log_path() -> str:
+    """Today's MeshCore RF log — matches csv_watcher's rf_log_*.csv glob."""
+    return os.path.join(LOG_DIR, f"rf_log_meshcore_{date.today():%Y-%m-%d}.csv")
+
+
+def _fmt(v):
+    return "" if v is None else v
+
+
+def append_rf_row(node_id: str, node_name: str | None, hub_id: str,
+                  lat: float | None, lon: float | None, rssi: float | None,
+                  snr: float | None, freq_mhz: float | None, packet_type: str | None) -> None:
+    """Append one observation to the MeshCore RF log; csv_watcher tails this to write
+    positions + rf_metrics AND broadcast the live {type:'rf'} WS event (+ LED/map).
 
     RSSI note: on this MeshAdv HAT the SX126x GetPacketStatus RSSI bytes read back
-    invalid (~0/-1 dBm) while the SNR byte is valid. A genuine received-packet RSSI is
-    always well below -5 dBm, so anything above that is the hardware garbage value —
-    store NULL rather than a misleading 0. SNR (the better LoRa link metric) is kept.
+    invalid (~0/-1 dBm) while SNR is valid. A real received-packet RSSI is always well
+    below -5 dBm, so anything above that is the hardware garbage value — write blank
+    (→ NULL) rather than a misleading 0. SNR (the better LoRa link metric) is kept.
     """
     if rssi is not None and rssi > -5:
         rssi = None
-    if rssi is None and snr is None:
-        return
-    con = sqlite3.connect(DB_PATH, timeout=10)
-    try:
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute(
-            "INSERT INTO rf_metrics "
-            "(timestamp, source_id, source_name, hub_id, rssi, snr, frequency, "
-            " direct_or_relay, packet_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_utcnow(), source_id, source_name, hub_id, rssi, snr, frequency,
-             "direct", packet_type),
-        )
-        con.commit()
-    finally:
-        con.close()
+    path = _rf_log_path()
+    new_file = not os.path.exists(path)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    # csv_watcher parses the timestamp as LOCAL time ("%Y-%m-%d %H:%M:%S") -> UTC.
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "source_type": SOURCE_TYPE, "node_id": node_id, "node_name": node_name or node_id,
+        "hub_id": hub_id, "node_lat": _fmt(lat), "node_lon": _fmt(lon),
+        "rssi": _fmt(rssi), "snr": _fmt(snr), "freq_mhz": _fmt(freq_mhz),
+        "packet_type": packet_type or "",
+    }
+    with open(path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=RF_CSV_COLUMNS)
+        if new_file:
+            w.writeheader()
+        w.writerow(row)
 
 
 # ── GPS (ATGM336H on /dev/serial0) ──
@@ -181,31 +200,38 @@ def _make_ingest(hub_name: str, frequency: float):
     from pymc_core.node.events.event_service import EventSubscriber
     from pymc_core.node.events.events import MeshEvents
 
+    freq_mhz = frequency / 1e6
+
     class JtakIngest(EventSubscriber):
-        """Route MeshCore mesh events into the shared jTAK SQLite tables."""
+        """Route MeshCore mesh events into jTAK: RF/positions via the RF log
+        (csv_watcher owns those writes + the live WS broadcast); chat text goes
+        straight to mesh_messages, which csv_watcher does not handle."""
 
         async def handle_event(self, et, data):
             try:
                 if et == MeshEvents.NODE_DISCOVERED:
                     pubkey = data.get("public_key")
-                    name = data.get("name") or (pubkey[:8] if pubkey else "unknown")
+                    if not pubkey:
+                        return
+                    name = data.get("name") or pubkey[:8]
                     lat, lon = data.get("lat"), data.get("lon")
-                    rssi, snr = data.get("rssi"), data.get("snr")
-                    if pubkey and (lat or lon):  # only record real positions
-                        write_position(pubkey, name, float(lat), float(lon))
-                        log.info(f"[pos] {name} @ {lat:.5f},{lon:.5f} ({pubkey[:8]}…)")
-                    if pubkey:
-                        write_rf_metric(pubkey, name, hub_name, rssi, snr, frequency, "advert")
+                    has_loc = bool(lat or lon)
+                    append_rf_row(pubkey, name, hub_name,
+                                  float(lat) if has_loc else None,
+                                  float(lon) if has_loc else None,
+                                  data.get("rssi"), data.get("snr"), freq_mhz, "advert")
+                    loc = f"@ {lat:.5f},{lon:.5f}" if has_loc else "(no location)"
+                    log.info(f"[advert] {name} {loc} ({pubkey[:8]}…)")
 
                 elif et == MeshEvents.NEW_CHANNEL_MESSAGE:
                     ni = data.get("network_info") or {}
                     sender = data.get("sender_name") or "unknown"
                     text = data.get("message_text") or ""
                     ch_name = data.get("channel_name")
-                    # Channel msgs are group-encrypted: sender identified by self-declared name.
+                    # Channel msgs are group-encrypted: sender is a self-declared name.
                     write_message("rx", None, sender, None, None, 0, ch_name, text)
-                    write_rf_metric(sender, sender, hub_name, ni.get("rssi"), ni.get("snr"),
-                                    frequency, "channel_text")
+                    append_rf_row(sender, sender, hub_name, None, None,
+                                  ni.get("rssi"), ni.get("snr"), freq_mhz, "channel_text")
                     log.info(f"[chan] {ch_name} <{sender}>: {text!r}")
 
                 elif et == MeshEvents.NEW_MESSAGE:  # DM (PKI — has sender pubkey)
@@ -215,8 +241,8 @@ def _make_ingest(hub_name: str, frequency: float):
                     sender = data.get("sender_name") or data.get("contact_name") or "unknown"
                     text = data.get("message_text") or ""
                     write_message("rx", pk_hex, sender, None, None, 0, None, text)
-                    write_rf_metric(pk_hex or sender, sender, hub_name,
-                                    ni.get("rssi"), ni.get("snr"), frequency, "direct_text")
+                    append_rf_row(pk_hex or sender, sender, hub_name, None, None,
+                                  ni.get("rssi"), ni.get("snr"), freq_mhz, "direct_text")
                     log.info(f"[dm] <{sender}>: {text!r}")
             except Exception as e:
                 log.error(f"[ingest] {et} handler error: {e}", exc_info=True)

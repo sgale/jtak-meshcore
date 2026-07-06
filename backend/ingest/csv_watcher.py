@@ -105,13 +105,16 @@ async def _ingest_row(row: dict):
     lat = _f("node_lat")
     lon = _f("node_lon")
 
-    # Position row (only if we have coords)
+    # Position row (only if we have coords). source_type defaults to meshtastic_node
+    # for legacy logs; MeshCore's rf_log carries source_type='meshcore' so its nodes
+    # stay collision-safe vs the Meshtastic node keyspace.
+    source_type = row.get("source_type") or "meshtastic_node"
     if lat is not None and lon is not None:
         await db.execute(
             """INSERT INTO positions
                (timestamp, source_id, source_name, source_type, latitude, longitude, altitude)
                VALUES (?,?,?,?,?,?,?)""",
-            (ts, source_id, source_name, "meshtastic_node", lat, lon, _f("node_alt_m")),
+            (ts, source_id, source_name, source_type, lat, lon, _f("node_alt_m")),
         )
 
     # Track this hub's own position from hub_lat/hub_lon columns
