@@ -1,0 +1,17 @@
+[Unit]
+Description=jTAK MeshCore Ingest (LoRa positions/messages/RF -> SQLite; companion frame server for the phone)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+User=sdg
+WorkingDirectory=/opt/jtak
+# Runs under the pymc venv (has pymc_core + pyserial); the jtak venv does not.
+ExecStart=/home/sdg/pymc/venv/bin/python /opt/jtak/ingest/meshcore_monitor.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
