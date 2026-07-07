@@ -530,6 +530,68 @@ async def telemetry_poll(companion, hub_name: str, freq_mhz: float, tcfg: dict):
         await asyncio.sleep(interval)
 
 
+# ── Outbound: drain the dashboard's send queue over the radio ──────────────────
+# POST /mesh/send (routes_mesh.py) only INSERTs into mesh_send_queue; on the old
+# Meshtastic hub tactical_monitor drained it. MeshCore replaced that worker, so we
+# drain it here: channel rows (to_id like '^all') go out via send_channel_message;
+# direct rows (to_id == 64-hex contact pubkey) via send_text_message. Sent rows are
+# mirrored into mesh_messages (direction 'tx') so they show in the chat history.
+def _is_pubkey(to_id: str) -> bool:
+    return (isinstance(to_id, str) and len(to_id) == 64
+            and all(c in "0123456789abcdefABCDEF" for c in to_id))
+
+
+async def send_queue_drainer(companion, hub_id: str, hub_name: str, poll_sec: int = 3):
+    log.info(f"[send] outbound queue drainer up — polling mesh_send_queue every {poll_sec}s.")
+    while True:
+        try:
+            con = sqlite3.connect(DB_PATH, timeout=10)
+            con.execute("PRAGMA journal_mode=WAL")
+            rows = con.execute(
+                "SELECT id,to_id,to_name,channel_index,channel_name,message,want_ack "
+                "FROM mesh_send_queue WHERE status='pending' ORDER BY id LIMIT 5"
+            ).fetchall()
+            con.close()   # release the lock before the (blocking) radio send
+        except Exception as e:
+            log.error(f"[send] queue poll error: {e}")
+            await asyncio.sleep(poll_sec)
+            continue
+
+        for rid, to_id, to_name, ch_idx, ch_name, message, want_ack in rows:
+            is_dm = _is_pubkey(to_id or "")
+            status = "failed"
+            try:
+                if is_dm:
+                    res = await companion.send_text_message(
+                        bytes.fromhex(to_id), message, wait_for_ack=bool(want_ack))
+                    ok = bool(getattr(res, "success", False))
+                    log.info(f"[send] DM → {to_name or to_id[:12]}: {message!r} -> "
+                             f"{'sent' if ok else 'failed'}")
+                else:
+                    ok = await companion.send_channel_message(int(ch_idx or 0), message)
+                    log.info(f"[send] CH{ch_idx or 0} {ch_name or ''} → {message!r} -> "
+                             f"{'sent' if ok else 'failed'}")
+                status = "sent" if ok else "failed"
+            except Exception as e:
+                log.error(f"[send] TX error (id={rid}): {e}", exc_info=True)
+
+            try:
+                con = sqlite3.connect(DB_PATH, timeout=10)
+                con.execute("PRAGMA journal_mode=WAL")
+                con.execute("UPDATE mesh_send_queue SET status=? WHERE id=?", (status, rid))
+                con.commit()
+                con.close()
+            except Exception as e:
+                log.error(f"[send] status write error (id={rid}): {e}")
+
+            if status == "sent":
+                write_message("tx", hub_id, hub_name,
+                              to_id if is_dm else None, to_name,
+                              int(ch_idx or 0), None if is_dm else ch_name,
+                              message, want_ack=int(bool(want_ack)))
+        await asyncio.sleep(poll_sec)
+
+
 async def run():
     """Main loop: bring up the MeshCore companion node, serve the phone, ingest to jTAK."""
     cfg = _cfg()
@@ -635,6 +697,9 @@ async def run():
     if tcfg.get("enabled", False):
         asyncio.create_task(telemetry_poll(companion, hub_name, freq / 1e6, tcfg))
         log.info(f"[telem] enabled — polling every {tcfg.get('interval_sec', 300)}s.")
+
+    # 9.5) Outbound: drain the dashboard's mesh_send_queue over the radio (channel + DM).
+    asyncio.create_task(send_queue_drainer(companion, pubkey, node_name))
 
     # 10) The hub is the dashboard's own self-marker (rendered from /api/status
     #     hub_position), NOT a mesh node — so we do not write it into the positions table.
