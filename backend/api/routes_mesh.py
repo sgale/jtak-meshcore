@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from store.db import get_db
+from utils.config import get as cfg_get
 
 router = APIRouter()
 
@@ -31,6 +32,19 @@ MAX_MSG_BYTES = 237
 
 @router.get("/mesh/channels")
 async def get_channels():
+    # Live MeshCore channel registry from jtak.yaml is the source of truth. Only the
+    # index/name reach the client — the channel secret NEVER leaves the backend.
+    try:
+        chans = cfg_get("meshcore.channels") or []
+        out = [{"index": c.get("index", i),
+                "name": c.get("name", f"Channel {c.get('index', i)}"),
+                "role": 1}
+               for i, c in enumerate(chans)]
+        if out:
+            return out
+    except Exception:
+        pass
+    # Legacy Meshtastic channel file, then a hard default.
     try:
         return json.loads(CHANNELS_FILE.read_text())
     except Exception:
