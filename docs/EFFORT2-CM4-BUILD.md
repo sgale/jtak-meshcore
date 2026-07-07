@@ -78,7 +78,8 @@ From jtak2 recon: OTS installed but not yet configured (own venv `~/.opentakserv
 ## 8. Portable feature: WiFi uplink (from the Meshtastic hubs)
 Built & proven on jtak2 (branch `feature/wifi-uplink`): single-radio concurrent **AP + STA** with eth0-primary / wifi-backup failover, plus a dashboard page to type an SSID/password (Option B, no scan). Reusable on the CM4. Files: `bin/jtak-wifi`, `backend/api/routes_wifi.py`, `frontend/wifi.html`, `config/systemd/jtak-wifi-sta.service`. Key facts: BCM43455 does AP+STA but **same-channel only** (`#channels<=1`); NM autoconnect is unreliable for the dynamically-created `sta0` vif → boot path explicitly `nmcli connection up`s the saved uplink.
 
-## 9. Current status / next action (updated 2026-07-05)
+## 9. Current status / next action (updated 2026-07-06)
+> **▶ LATEST: MVP-A SHIPPED & DEPLOYED 2026-07-06 — see §9.3.** The "NEXT ACTION #1 / Finish MVP-A" below and the §9.2 "RESUME HERE" are **DONE**. Live status, shipped features, and operational learnings are in **§9.3**.
 Built this far on host **`mcore1`** (CM4 4GB, Pi OS Bookworm, kernel 6.12.93), fork repo `sgale/jtak-meshcore` at `/opt/jtak`:
 - DONE — **skeleton LIVE:** venv + deps, config-fallback identity (NO meshtasticd), `jtak-api` on :8420, nginx dashboard at `https://192.168.86.52/jtak/` (self-signed cert).
 - DONE — **MVP-A pipeline PROVEN:** `ingest/meshcore_monitor.py` `write_position()` writes to `positions` (`source_type='meshcore'`); a test node flows to `/api/positions` + the map, zero Meshtastic in path. `run()` radio reader is a STUB.
@@ -132,6 +133,30 @@ Built this far on host **`mcore1`** (CM4 4GB, Pi OS Bookworm, kernel 6.12.93), f
 - **Naming/collision (Sean's requirement):** key jTAK rows on **`source_id = MeshCore pubkey` + `source_type='meshcore'`** (NOT display name) so MeshCore nodes never collide with the existing Meshtastic "jTAK Adam" etc. Renames are safe (pubkey stable). MeshCore nodes renamed to **MC Rachel** (`9263a332…`) / **MC Isaac** (`832f90c7…`).
 
 **RESUME HERE (fresh session on mcore1, 2026-07-06):** (1) sanity: `/dev/spidev0.0`, `halow0`, GPS via `gps_check.py`; `cd /home/sdg/pymc && ./venv/bin/python companion_server.py` → :5000 listens, phone can reconnect. (2) Build the real **`jtak-meshcore` service** around `companion_server.py`: `CompanionRadio` + `CompanionFrameServer` (phone) + **`EventService` subscribers** → `write_position(pubkey, name, lat, lon)` / `mesh_messages` / `rf_metrics(rssi,snr)`; load the jTAK Private channel; feed the hub's own GPS as its node position; **key everything on pubkey+source_type**. (3) Fix the persistent-identity round-trip. (4) `jtak-meshcore.service` (mirror `tactical_monitor.service`). (5) strip the dormant Meshtastic path. All decode + the phone/TCP topology are proven — this is integration, not R&D.
+
+## 9.3 MVP-A SHIPPED — full `jtak-meshcore` service LIVE & DEPLOYED (2026-07-06)
+The stub is gone. `ingest/meshcore_monitor.py` is the real service (runs under `/home/sdg/pymc/venv`, `jtak-meshcore.service`, enabled). Architecture is the proven **B-prime** (one process/one radio: `CompanionRadio` owns the SX1262 + backs `CompanionFrameServer` :5000 for the phone; jTAK ingests **in-process** via `companion._event_service.subscribe_all`). Verified end-to-end on 2× Heltec T096 with real GPS locks. Everything keys on `source_id=pubkey` + `source_type='meshcore'`. Commits: `5796368` (CSV producer), `4535fe0` (telemetry/contacts/position policy), `f734c41` (GPS sats / self-marker / LED).
+
+**Shipped features:**
+- **Ingest → live dashboard:** adverts (`NODE_DISCOVERED`), channel msgs (`NEW_CHANNEL_MESSAGE`), DMs (`NEW_MESSAGE`) → the **RF-log CSV** → `csv_watcher` (inside jtak-api) owns positions/rf_metrics writes **+ the live WS broadcast + LED**. ⚠️ The live NODES / LAST-RF / map panels are **WS-driven, not DB-polled** — a producer MUST write the RF CSV, not just the DB.
+- **Hub-driven telemetry poll** (`telemetry:` cfg, 5 min): `send_telemetry_request` per chat node → GPS + battery (volts→%) + temp/humidity (CayenneLPP). CSV cols `temp_c/humidity_pct/battery_pct`. **Position policy:** adverts (~0.1 m) drive the pin; coarse ~11 m telemetry GPS only overrides on stale advert (`position_stale_sec`) or move > `move_threshold_m` — so co-located nodes don't collapse onto one pin.
+- **Persistent contact book:** `companion.contacts.to_dicts()` (nodes + `out_path` routing) → `contacts_file` JSON, reloaded on boot (debounced atomic saver). Survives restart — no re-advert; telemetry polls immediately.
+- **Hub GPS on the header:** `read_gps` parses sats + HDOP from GGA; a 120 s poll refreshes hub position AND writes `/opt/jtak/data/meshcore-gps.json`; `routes_status` reads it → `/api/status hub_sats/hub_hdop/hub_position` (LED6 + header).
+- **Hub = dashboard self-marker** (white/orange `marker-self` from `hub_position`), **NOT** a mesh node (writing it as a node duplicated + overlapped it). Renamed **jTAK-MCore1**: `meshcore.node_name` (mesh advert) + `hub.name/short_name` (dashboard).
+- **LED ring LIVE:** `jtak-led.service` (root, `led_daemon_new.py`, WS2812 7-LED on GPIO19). Per-event: new_node 🌈 / channel cyan / DM green / RF white / GPS-lock blue (LED6); telemetry quiet. `rpi_ws281x` installed to system python3.
+
+**Key operational learnings (non-obvious — keep):**
+- **gpsd is DEAD on this hub** (`gpsd inactive`, `gpspipe` absent) — the Meshtastic-era GPS-status path never worked. **MeshCore owns the serial GPS (`/dev/serial0`)** directly and publishes to the status file `routes_status` now reads.
+- **`csv_watcher` backfills the last 500 RF-CSV rows into the DB on every jtak-api restart** → **DB-only row deletions get UNDONE**. To durably remove bad rows, fix the CSV too (bit us with coarse telemetry positions).
+- **RF-log CSV header must match the column set** — a stale header (file created before cols were added mid-day) silently drops extras into a DictReader `None` bucket (battery was being lost). Self-heals at next-day rollover; today's file was repaired.
+- **LED on GPIO19 = PWM1**, onboard audio = PWM0 → **no conflict** (`dtparam=audio=on` is fine). Daemon runs as root for `/dev/mem` + DMA.
+- SX126x `getPacketStatus` RSSI reads intermittently garbage (~0/−1) while SNR is valid — sanitized (blank if > −5 dBm).
+
+**NEXT (Effort-2 remaining, no longer MVP-A):**
+1. **HaLow two-node link + iperf at range** — THE open HaLow item (needs a 2nd node); then MVP-B/C (backhaul + Reticulum bridge LoRa↔HaLow).
+2. Strip the dormant **Meshtastic** ingest path (`tactical_monitor`, `routes_meshtastic_debug`, the 86 KB MT config UI).
+3. Waypoints strategy (decision (i)) + minimal MeshCore config page (decision (ii)) — post-MVP-A, still deferred.
+4. Set real `admin.password` (still `CHANGEME` per §9 notes).
 
 ---
 *Master planning memory lives on the `stage` Pi at `~/.claude/projects/-home-sdg/memory/` (files `project_jtak_hub_roadmap.md`, `changelog_jtak_hub.md`). That memory does NOT travel between machines — this file is the portable handoff. Keep it updated as the build progresses.*
