@@ -79,7 +79,7 @@ From jtak2 recon: OTS installed but not yet configured (own venv `~/.opentakserv
 Built & proven on jtak2 (branch `feature/wifi-uplink`): single-radio concurrent **AP + STA** with eth0-primary / wifi-backup failover, plus a dashboard page to type an SSID/password (Option B, no scan). Reusable on the CM4. Files: `bin/jtak-wifi`, `backend/api/routes_wifi.py`, `frontend/wifi.html`, `config/systemd/jtak-wifi-sta.service`. Key facts: BCM43455 does AP+STA but **same-channel only** (`#channels<=1`); NM autoconnect is unreliable for the dynamically-created `sta0` vif → boot path explicitly `nmcli connection up`s the saved uplink.
 
 ## 9. Current status / next action (updated 2026-07-06)
-> **▶ LATEST: MVP-A SHIPPED & DEPLOYED 2026-07-06 — see §9.3.** The "NEXT ACTION #1 / Finish MVP-A" below and the §9.2 "RESUME HERE" are **DONE**. Live status, shipped features, and operational learnings are in **§9.3**.
+> **▶ LATEST: Console messaging LIVE 2026-07-07 — see §9.4** (outbound send + reliable DM delivery, incl. the ⚠️ `pymc_core` ACK-length monkeypatch). MVP-A itself SHIPPED & DEPLOYED 2026-07-06 — see §9.3. The "NEXT ACTION #1 / Finish MVP-A" below and the §9.2 "RESUME HERE" are **DONE**.
 Built this far on host **`mcore1`** (CM4 4GB, Pi OS Bookworm, kernel 6.12.93), fork repo `sgale/jtak-meshcore` at `/opt/jtak`:
 - DONE — **skeleton LIVE:** venv + deps, config-fallback identity (NO meshtasticd), `jtak-api` on :8420, nginx dashboard at `https://192.168.86.52/jtak/` (self-signed cert).
 - DONE — **MVP-A pipeline PROVEN:** `ingest/meshcore_monitor.py` `write_position()` writes to `positions` (`source_type='meshcore'`); a test node flows to `/api/positions` + the map, zero Meshtastic in path. `run()` radio reader is a STUB.
@@ -157,6 +157,23 @@ The stub is gone. `ingest/meshcore_monitor.py` is the real service (runs under `
 2. Strip the dormant **Meshtastic** ingest path (`tactical_monitor`, `routes_meshtastic_debug`, the 86 KB MT config UI).
 3. Waypoints strategy (decision (i)) + minimal MeshCore config page (decision (ii)) — post-MVP-A, still deferred.
 4. Set real `admin.password` (still `CHANGEME` per §9 notes).
+
+## 9.4 Console messaging: outbound send + reliable DM delivery (2026-07-07)
+The dashboard's **Send Message** console was dead on MeshCore: `POST /mesh/send` only INSERTs into `mesh_send_queue`, which the retired Meshtastic `tactical_monitor` used to drain. Added a **`send_queue_drainer`** to the MeshCore service that transmits queued rows over the radio; channel rows (`to_id '^all'`) via `send_channel_message`, DMs (64-hex pubkey) via `send_text_message`, mirroring sent rows into `mesh_messages`. Commits: `5da257e` (drainer), `a3aab91` (real channel names from `jtak.yaml`, secret never leaked), `30cbdaf` (battery fix, see below), `e419ab8` (DM delivery: ACK interop + retries + failed/recipient UI).
+
+**Shipped:**
+- **Outbound send LIVE** — channel + DM from the console actually transmit; sent messages appear in the chat panel (`direction='tx'`).
+- **`/mesh/channels` shows the real registry** — reads `meshcore.channels` from `jtak.yaml` (index+name only, **secret stays backend-side**) instead of the stale Meshtastic-era `mesh_channels.json` fallback ("Primary").
+- **Battery no longer flaps** (`30cbdaf`) — `/api/nodes` + map pulled `battery_pct` via `SELECT battery_pct, MAX(timestamp) GROUP BY source_id`; SQLite's bare-column rule took battery from the latest row, but battery only rides `telemetry` packets (adverts/channel/DM = NULL), so any advert blanked it. Fixed with a `latest_batt` CTE (newest row `WHERE battery_pct IS NOT NULL`); also carried through the live WS + frontend merge.
+- **DM retries** — DMs retry up to `meshcore.send.max_attempts` (default 3) with escalating backoff (`retry_backoff_sec * attempt`); channel/group sends stay single-shot flood (no ACK exists). New `meshcore.send` cfg block (`max_attempts`, `retry_backoff_sec`, `ack_timeout_sec`).
+- **Failed / recipient UI** — every attempt recorded (sent OR failed) via new `mesh_messages.status` column (idempotent `ALTER` migration in `store/db.py`); failed sends render red + "NOT DELIVERED". Channel msgs store `to_id '^all'` and inbound DMs record the hub as recipient, so the old "→ ?" resolves to the channel name / hub name.
+
+**⚠️ CRITICAL interop learning — the ACK-length monkeypatch (keep, re-verify on any `pymc_core` bump):**
+- **Symptom:** DMs to a *powered-on, in-range* node delivered fine (peer showed the message ×3) but every send reported failed → all 3 retries fired.
+- **Root cause:** the ACK **does** come back (~500 ms) with the correct CRC, but our Heltec T096s (with the **extended / 2-ACK radio setting**) send a **6-byte ACK** = 4-byte CRC + 2 trailing metadata bytes (e.g. `FEA6637F00A7`). `pymc_core`'s `AckHandler.process_discrete_ack` **hard-rejects any payload `!= 4` bytes** (`node/handlers/ack.py`), so a valid ACK was always dropped.
+- **Fix (lives in OUR repo, not the vendored lib):** `_patch_pymc_ack_length()` in `meshcore_monitor.py` monkeypatches `AckHandler.process_discrete_ack` at startup to accept `>= 4` bytes and use the first 4 (LE) as the CRC. **If `pymc_core` is ever upgraded/reinstalled, re-verify this patch still applies** (grep the installed `ack.py` for the `!= 4` check).
+- **Two more gotchas fixed alongside:** (a) `send_text_message(wait_for_ack=True)` waits on the *packet* CRC, but MeshCore ACKs carry a *content-derived* `ack_crc` — so we send with its wait OFF and wait on `res.expected_ack` via `dispatcher.wait_for_ack`. (b) Each send stamps a **fresh `ack_crc`** (hash of `timestamp + attempt`), so retries change the CRC we're listening for — `_wait_for_any_ack` waits on the accumulated set of *all* attempts' CRCs so a late ACK still counts.
+- **Radio setting:** the node-side "2 ACKs / extended ACK" toggle can stay **ON** — the hub now handles 6-byte ACKs natively and the redundancy helps.
 
 ---
 *Master planning memory lives on the `stage` Pi at `~/.claude/projects/-home-sdg/memory/` (files `project_jtak_hub_roadmap.md`, `changelog_jtak_hub.md`). That memory does NOT travel between machines — this file is the portable handoff. Keep it updated as the build progresses.*
