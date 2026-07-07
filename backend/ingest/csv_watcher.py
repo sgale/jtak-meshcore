@@ -170,12 +170,22 @@ async def _ingest_row(row: dict):
     )
     await db.commit()
 
-    # LED events (suppressed during startup backfill)
+    # LED events (suppressed during startup backfill). One effect per packet, by type:
+    #   first-seen node -> new_node (rainbow); channel msg -> cyan; DM -> green;
+    #   telemetry poll -> quiet (don't strobe every cycle); else (advert/RF) -> white.
     if not _backfilling:
-        led_client.event("lora_message")
+        pt = (row.get("packet_type") or "").lower()
         if source_id and source_id not in _seen_nodes:
             _seen_nodes.add(source_id)
             led_client.event("new_node")
+        elif pt in ("channel_text", "channel_message", "group_text"):
+            led_client.event("channel_message")
+        elif pt in ("direct_text", "direct_message", "dm"):
+            led_client.event("direct_message")
+        elif pt == "telemetry":
+            pass  # automated hub poll — no light
+        else:
+            led_client.event("lora_message")
     elif source_id:
         _seen_nodes.add(source_id)   # populate quietly during backfill
 

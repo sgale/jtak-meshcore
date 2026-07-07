@@ -23,77 +23,33 @@ router = APIRouter()
 _cached_sats: int | None = None
 _cached_hdop: float | None = None
 
+# MeshCore hub GPS status — written by ingest/meshcore_monitor.py, which owns the
+# serial GPS on this hub (gpsd is not used). Header sat count / HDOP come from here.
+_MC_GPS_PATH = Path("/opt/jtak/data/meshcore-gps.json")
+
+
 async def _poll_gps_sats():
-    """Background task: refresh sat count + position from gpsd every 5s."""
+    """Background task: refresh sat count + HDOP + position from the MeshCore hub GPS
+    status file (meshcore_monitor publishes it ~every 2 min)."""
     global _cached_sats, _cached_hdop
     while True:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "/usr/bin/gpspipe", "-w", "-n", "10",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=12)
-            finally:
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
-            sky_found = tpv_found = False
-            new_sats = None
-            new_hdop = None
-            tpv_has_fix = False
-            for line in stdout.decode().splitlines():
-                if '"class":"SKY"' in line and not sky_found:
-                    sky = json.loads(line)
-                    new_sats = sky.get("uSat")
-                    new_hdop  = sky.get("hdop")
-                    sky_found = True
-                elif '"class":"TPV"' in line and not tpv_found:
-                    tpv = json.loads(line)
-                    if tpv.get("mode", 0) >= 2 and tpv.get("lat") and tpv.get("lon"):
-                        spd = tpv.get("speed")  # m/s from chip Kalman filter
-                        hub_position["latitude"]   = tpv["lat"]
-                        hub_position["longitude"]  = tpv["lon"]
-                        hub_position["altitude"]   = tpv.get("alt")
-                        hub_position["speed_mph"]  = round(spd * 2.23694, 2) if spd is not None else None
-                        hub_position["heading_deg"]= tpv.get("track")   # degrees true north
-                        hub_position["climb_mps"]  = tpv.get("climb")   # + = ascending
-                        hub_position["epx_m"]      = round(tpv["epx"], 1) if tpv.get("epx") else None
-                        hub_position["epy_m"]      = round(tpv["epy"], 1) if tpv.get("epy") else None
-                        tpv_has_fix = True
-                    else:
-                        # No fix — clear stale position so dashboard shows current reality
-                        hub_position["latitude"]   = None
-                        hub_position["longitude"]  = None
-                        hub_position["altitude"]   = None
-                        hub_position["speed_mph"]  = None
-                        hub_position["heading_deg"]= None
-                        hub_position["climb_mps"]  = None
-                        hub_position["epx_m"]      = None
-                        hub_position["epy_m"]      = None
-                    tpv_found = True
-                if sky_found and tpv_found:
-                    break
-            # Always update sat count from SKY regardless of fix status
-            _cached_sats = new_sats
-            _cached_hdop = new_hdop
-            hub_position["sats"] = new_sats
-            # Write shared GPS state for tactical_monitor.py
-            try:
-                _GPS_STATE_PATH.write_text(json.dumps({
-                    "hdop":        _cached_hdop,
-                    "sats":        _cached_sats,
-                    "epx_m":       hub_position.get("epx_m"),
-                    "epy_m":       hub_position.get("epy_m"),
-                    "speed_mph":   hub_position.get("speed_mph"),
-                    "heading_deg": hub_position.get("heading_deg"),
-                }))
-            except Exception:
-                pass
+            data = json.loads(_MC_GPS_PATH.read_text())
+            _cached_sats = data.get("sats")
+            _cached_hdop = data.get("hdop")
+            hub_position["sats"] = _cached_sats
+            if data.get("fix") and data.get("lat") is not None:
+                hub_position["latitude"]  = data["lat"]
+                hub_position["longitude"] = data["lon"]
+            else:
+                # No fix — clear stale position so the dashboard shows current reality.
+                hub_position["latitude"]  = None
+                hub_position["longitude"] = None
+        except FileNotFoundError:
+            pass  # meshcore service not up yet
         except Exception:
             pass
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
 
 
 

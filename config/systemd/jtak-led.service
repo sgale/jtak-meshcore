@@ -1,0 +1,16 @@
+[Unit]
+Description=jTAK LED Daemon (WS2812 7-LED ring on GPIO19)
+After=network.target
+
+[Service]
+Type=simple
+# Runs as root: rpi_ws281x needs /dev/mem + a DMA/PWM channel for the WS2812 ring.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/jtak/led/led_daemon_new.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

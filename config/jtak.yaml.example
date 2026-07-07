@@ -170,10 +170,11 @@ meshcore:
     port: /dev/serial0
     baud: 9600
     fix_timeout_sec: 12
-    # Re-read the hub's own fix this often. Match to advert_interval_sec so every advert
-    # carries a fresh position (a mobile hub stays current on field radios' maps). Raise
-    # it if the hub is a fixed base station to save power.
-    refresh_sec: 300
+    # Hub GPS poll cadence: how often the hub re-reads its own fix to refresh its map
+    # position AND publish satellite count + HDOP to the header indicator (via
+    # /opt/jtak/data/meshcore-gps.json, which routes_status reads). 120s = the 2-min
+    # header update. The advert loop broadcasts the latest fix on advert_interval_sec.
+    refresh_sec: 120
   radio:
     frequency: 910525000       # US MeshCore preset — match your region + all field nodes
     bandwidth: 250000

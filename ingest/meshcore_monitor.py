@@ -230,25 +230,85 @@ def _nmea_to_deg(val, hemi):
 
 
 def read_gps(port: str, baud: int, dur: int):
-    """Return (lat, lon) once a fix is parsed from NMEA, else (None, None)."""
+    """Parse NMEA for up to `dur`s. Returns (lat, lon, sats, hdop).
+
+    GGA carries fix quality + satellites-used (field 7) + HDOP (field 8); RMC carries
+    position but no sat count. We keep reading until we have both a fix and a sat count
+    (a full GGA) so the header gets a real satellite number, not just lat/lon.
+    lat/lon are None until a fix; sats/hdop may be present even without one.
+    """
+    lat = lon = sats = hdop = None
     try:
         import serial
         ser = serial.Serial(port, baud, timeout=1)
     except Exception as e:
         log.warning(f"[gps] open failed: {e}")
-        return None, None
+        return None, None, None, None
     t0 = time.time()
     try:
         while time.time() - t0 < dur:
             raw = ser.readline().decode("ascii", "replace").strip()
             f = raw.split(",")
-            if raw[3:6] == "RMC" and len(f) > 6 and f[2] == "A" and f[3]:
-                return _nmea_to_deg(f[3], f[4]), _nmea_to_deg(f[5], f[6])
-            if raw[3:6] == "GGA" and len(f) > 6 and f[6] not in ("", "0") and f[2]:
-                return _nmea_to_deg(f[2], f[3]), _nmea_to_deg(f[4], f[5])
+            typ = raw[3:6]
+            if typ == "GGA" and len(f) > 8:
+                # $..GGA,time,lat,N,lon,E,fixQ,numSat,HDOP,alt,...
+                if f[7]:
+                    try:
+                        sats = int(f[7])
+                    except ValueError:
+                        pass
+                if f[8]:
+                    try:
+                        hdop = float(f[8])
+                    except ValueError:
+                        pass
+                if f[6] not in ("", "0") and f[2]:
+                    lat, lon = _nmea_to_deg(f[2], f[3]), _nmea_to_deg(f[4], f[5])
+            elif typ == "RMC" and len(f) > 6 and f[2] == "A" and f[3] and lat is None:
+                lat, lon = _nmea_to_deg(f[3], f[4]), _nmea_to_deg(f[5], f[6])
+            # Once we have a fix AND a sat count, we've read a full GGA — done.
+            if lat is not None and sats is not None:
+                break
     finally:
         ser.close()
-    return None, None
+    return lat, lon, sats, hdop
+
+
+# ── Hub GPS status file (header/LED read this via routes_status; gpsd is unused here) ──
+GPS_STATUS_PATH = "/opt/jtak/data/meshcore-gps.json"
+
+
+def write_gps_status(lat, lon, sats, hdop) -> None:
+    """Publish the hub's own GPS state for the API/header. Atomic write."""
+    try:
+        os.makedirs(os.path.dirname(GPS_STATUS_PATH), exist_ok=True)
+        tmp = GPS_STATUS_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"lat": lat, "lon": lon, "sats": sats, "hdop": hdop,
+                       "fix": lat is not None, "ts": _utcnow()}, fh)
+        os.replace(tmp, GPS_STATUS_PATH)
+    except Exception as e:
+        log.warning(f"[gps] status write failed: {e}")
+
+
+async def gps_status_poll(companion, node_name: str, pubkey: str, g: dict, interval: int):
+    """Poll the hub's own GPS every `interval`s: refresh the advert location + hub
+    position row, and publish sats/HDOP to the status file the header reads. One reader
+    for the serial port (no contention with the advert loop)."""
+    port, baud, fto = g.get("port", "/dev/serial0"), g.get("baud", 9600), g.get("fix_timeout_sec", 12)
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(interval)
+        # read_gps blocks on the serial port — run it off the event loop.
+        lat, lon, sats, hdop = await loop.run_in_executor(None, read_gps, port, baud, fto)
+        write_gps_status(lat, lon, sats, hdop)
+        if lat is not None:
+            # Advertise our location to the mesh (field radios track the hub), and publish
+            # to the header via the GPS status file above. We do NOT write the hub into the
+            # positions table — the dashboard renders it as its own self-marker from
+            # /api/status (hub_position), so writing it as a mesh node would duplicate it.
+            companion.set_advert_latlon(lat, lon)
+        log.info(f"[gps] poll: fix={'yes' if lat is not None else 'no'} sats={sats} hdop={hdop}")
 
 
 # ── Persistent identity (serialize the SIGNING seed, not the X25519 key) ──
@@ -499,12 +559,15 @@ async def run():
     identity = load_identity(mc["seed_file"])
     pubkey = identity.get_public_key().hex()
 
-    # 2) Initial GPS fix (own node position)
+    # 2) Initial GPS fix (own node position + sat count for the header)
     g = mc.get("gps") or {}
-    lat, lon = read_gps(g.get("port", "/dev/serial0"), g.get("baud", 9600),
-                        g.get("fix_timeout_sec", 12))
+    lat, lon, sats, hdop = read_gps(g.get("port", "/dev/serial0"), g.get("baud", 9600),
+                                    g.get("fix_timeout_sec", 12))
+    write_gps_status(lat, lon, sats, hdop)
     if lat is None:
         log.warning("[gps] no fix at startup — advertising WITHOUT location until one is acquired.")
+    else:
+        log.info(f"[gps] startup fix {lat:.6f},{lon:.6f} sats={sats} hdop={hdop}")
 
     # 3) Radio up
     radio = SX1262Radio(**radio_kwargs)
@@ -573,31 +636,23 @@ async def run():
         asyncio.create_task(telemetry_poll(companion, hub_name, freq / 1e6, tcfg))
         log.info(f"[telem] enabled — polling every {tcfg.get('interval_sec', 300)}s.")
 
-    # 10) Record the hub's own position row, then periodic advert + GPS refresh
-    if lat is not None:
-        write_position(pubkey, node_name, lat, lon)
+    # 10) The hub is the dashboard's own self-marker (rendered from /api/status
+    #     hub_position), NOT a mesh node — so we do not write it into the positions table.
+    #     Its map pin/location/header all flow from the GPS status file below.
+
+    # 10.5) Single GPS reader: refreshes position + sats/HDOP (for the header) on its own
+    #       cadence. Owns the serial port so it never collides with the advert loop.
+    gps_interval = g.get("refresh_sec", 120)
+    asyncio.create_task(gps_status_poll(companion, node_name, pubkey, g, gps_interval))
+    log.info(f"[gps] status poll every {gps_interval}s -> {GPS_STATUS_PATH}")
 
     adv_interval = mc.get("advert_interval_sec", 300)
-    gps_refresh = g.get("refresh_sec", 900)
-    last_gps = time.time()
     await companion.advertise(flood=True)
     log.info(f"[node] self-advert sent; advertising every {adv_interval}s. Running.")
 
     try:
         while True:
             await asyncio.sleep(adv_interval)
-            # Refresh our GPS fix so a moving hub keeps its map pin current and the next
-            # advert carries a fresh position. read_gps() blocks up to fix_timeout_sec on
-            # the serial port, so run it in a thread — otherwise it would stall the event
-            # loop (telemetry poll, phone frame server) for those seconds each cycle.
-            if time.time() - last_gps >= gps_refresh:
-                nlat, nlon = await asyncio.get_event_loop().run_in_executor(
-                    None, read_gps, g.get("port", "/dev/serial0"), g.get("baud", 9600),
-                    g.get("fix_timeout_sec", 12))
-                last_gps = time.time()
-                if nlat is not None:
-                    companion.set_advert_latlon(nlat, nlon)
-                    write_position(pubkey, node_name, nlat, nlon)
             await companion.advertise(flood=True)
             log.info("[node] advert re-sent.")
     finally:

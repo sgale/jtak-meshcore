@@ -64,8 +64,10 @@ STATE_EFFECTS = {
 }
 
 TRANSIENT_EFFECTS = {
-    "lora_message": {"ttl": 2, "effect": ("action", "white", "strobe", "fast")},
-    "new_node":     {"ttl": 8, "effect": ("preset", "rainbow")},
+    "lora_message":    {"ttl": 2, "effect": ("action", "white", "strobe", "fast")},
+    "new_node":        {"ttl": 8, "effect": ("preset", "rainbow")},
+    "channel_message": {"ttl": 3, "effect": ("action", "cyan",  "strobe", "fast")},
+    "direct_message":  {"ttl": 3, "effect": ("action", "green", "strobe", "fast")},
 }
 
 # ── Effect runner ─────────────────────────────────────────────────────────────
