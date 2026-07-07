@@ -123,15 +123,23 @@ async def positions_geojson():
            ),
            latest_rf AS (
                SELECT source_id, rssi, snr, distance_mi, bearing_deg,
-                      packet_type, battery_pct, MAX(timestamp) AS last_rf
+                      packet_type, MAX(timestamp) AS last_rf
                FROM rf_metrics GROUP BY source_id
+           ),
+           latest_batt AS (
+               -- Battery only rides telemetry rows; take the newest row that HAS a
+               -- reading so an interleaved advert/channel packet (battery NULL) can't
+               -- blank it out when it happens to be the latest overall packet.
+               SELECT source_id, battery_pct, MAX(timestamp) AS batt_ts
+               FROM rf_metrics WHERE battery_pct IS NOT NULL GROUP BY source_id
            )
            SELECT p.source_id, p.source_name, p.latitude, p.longitude,
                   p.altitude, p.last_position,
                   r.rssi, r.snr, r.distance_mi, r.bearing_deg,
-                  r.packet_type, r.battery_pct
+                  r.packet_type, b.battery_pct
            FROM latest_pos p
            LEFT JOIN latest_rf r ON r.source_id = p.source_id
+           LEFT JOIN latest_batt b ON b.source_id = p.source_id
            ORDER BY p.source_id"""
     ) as cur:
         rows = await cur.fetchall()
@@ -218,14 +226,22 @@ async def nodes():
            ),
            latest_rf AS (
                SELECT source_id, rssi, snr, distance_mi, bearing_deg, packet_type,
-                      battery_pct, MAX(timestamp) AS last_rf
+                      MAX(timestamp) AS last_rf
                FROM rf_metrics GROUP BY source_id
+           ),
+           latest_batt AS (
+               -- Battery only rides telemetry rows; take the newest row that HAS a
+               -- reading so an interleaved advert/channel packet (battery NULL) can't
+               -- blank it out when it happens to be the latest overall packet.
+               SELECT source_id, battery_pct, MAX(timestamp) AS batt_ts
+               FROM rf_metrics WHERE battery_pct IS NOT NULL GROUP BY source_id
            )
            SELECT p.source_id, p.source_name, p.latitude, p.longitude,
                   p.last_position, r.rssi, r.snr, r.distance_mi, r.bearing_deg,
-                  r.packet_type, r.battery_pct, r.last_rf
+                  r.packet_type, b.battery_pct, r.last_rf
            FROM latest_pos p
            LEFT JOIN latest_rf r ON r.source_id = p.source_id
+           LEFT JOIN latest_batt b ON b.source_id = p.source_id
            ORDER BY p.source_id"""
     ) as cur:
         rows = await cur.fetchall()

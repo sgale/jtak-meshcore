@@ -202,6 +202,7 @@ async def _ingest_row(row: dict):
         "snr":          _f("snr"),
         "distance_mi":  _f("distance_mi"),
         "packet_type":  row.get("packet_type"),
+        "battery_pct":  _f("battery_pct"),
         "temp_c":       sens.get("temp_c"),
         "temp_f":       sens.get("temp_f"),
         "humidity_pct": sens.get("humidity_pct"),

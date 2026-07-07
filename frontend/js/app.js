@@ -396,6 +396,7 @@ function connectWS() {
         snr:          msg.snr         ?? cached.snr,
         distance_mi:  msg.distance_mi ?? cached.distance_mi,
         packet_type:  msg.packet_type,
+        battery_pct:  msg.battery_pct ?? cached.battery_pct,
         temp_c:       msg.temp_c      ?? cached.temp_c,
         temp_f:       msg.temp_f      ?? cached.temp_f,
         humidity_pct: msg.humidity_pct ?? cached.humidity_pct,
