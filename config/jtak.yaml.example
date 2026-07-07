@@ -166,6 +166,13 @@ meshcore:
     # has moved more than move_threshold_m — so stationary nearby nodes stay distinct.
     position_stale_sec: 900    # seconds without an advert -> trust telemetry GPS
     move_threshold_m: 25       # or a telemetry fix >Nm from last advert -> node moved
+  # Outbound console messages (dashboard mesh_send_queue -> radio). Direct messages
+  # wait for a delivery ACK; stock MeshCore auto-retries an unacked DM, so the hub
+  # does too. Channel/group sends are fire-and-forget flood (no ACK) and never retry.
+  send:
+    max_attempts: 3            # DM transmissions before it's marked 'failed' (1 = single send)
+    retry_backoff_sec: 3       # base backoff; each retry waits backoff * attempt (3s, 6s, ...)
+    ack_timeout_sec: 8         # wait per DM attempt for the delivery ACK (SF11 round-trip)
   gps:
     port: /dev/serial0
     baud: 9600

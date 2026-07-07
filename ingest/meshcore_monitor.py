@@ -96,18 +96,23 @@ def write_position(source_id: str, source_name: str, lat: float, lon: float,
 def write_message(direction: str, from_id: str | None, from_name: str | None,
                   to_id: str | None, to_name: str | None, channel_index: int,
                   channel_name: str | None, message: str,
-                  want_ack: int = 0, ack_received: int = 0) -> None:
-    """Insert one MeshCore message (rx/tx) into `mesh_messages`."""
+                  want_ack: int = 0, ack_received: int = 0,
+                  status: str | None = None) -> None:
+    """Insert one MeshCore message (rx/tx) into `mesh_messages`.
+
+    status is the tx delivery result ('sent' | 'failed'); left NULL for rx.
+    """
     con = sqlite3.connect(DB_PATH, timeout=10)
     try:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute(
             "INSERT INTO mesh_messages "
             "(timestamp, direction, from_id, from_name, to_id, to_name, "
-            " channel_index, channel_name, message, want_ack, ack_received) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " channel_index, channel_name, message, want_ack, ack_received, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), direction, from_id, from_name,
-             to_id, to_name, channel_index or 0, channel_name, message, want_ack, ack_received),
+             to_id, to_name, channel_index or 0, channel_name, message,
+             want_ack, ack_received, status),
         )
         con.commit()
     finally:
@@ -367,7 +372,8 @@ def _make_ingest(hub_name: str, frequency: float):
                     text = data.get("message_text") or ""
                     ch_name = data.get("channel_name")
                     # Channel msgs are group-encrypted: sender is a self-declared name.
-                    write_message("rx", None, sender, None, None, 0, ch_name, text)
+                    # to_id '^all' -> UI renders the channel (not a node) as recipient.
+                    write_message("rx", None, sender, "^all", None, 0, ch_name, text)
                     append_rf_row(sender, sender, hub_name, None, None,
                                   ni.get("rssi"), ni.get("snr"), freq_mhz, "channel_text")
                     log.info(f"[chan] {ch_name} <{sender}>: {text!r}")
@@ -378,7 +384,8 @@ def _make_ingest(hub_name: str, frequency: float):
                     pk_hex = pk.hex() if isinstance(pk, (bytes, bytearray)) else (pk or None)
                     sender = data.get("sender_name") or data.get("contact_name") or "unknown"
                     text = data.get("message_text") or ""
-                    write_message("rx", pk_hex, sender, None, None, 0, None, text)
+                    # DM addressed to us -> the hub is the recipient (show its name, not '?').
+                    write_message("rx", pk_hex, sender, None, hub_name, 0, None, text)
                     append_rf_row(pk_hex or sender, sender, hub_name, None, None,
                                   ni.get("rssi"), ni.get("snr"), freq_mhz, "direct_text")
                     log.info(f"[dm] <{sender}>: {text!r}")
@@ -541,8 +548,64 @@ def _is_pubkey(to_id: str) -> bool:
             and all(c in "0123456789abcdefABCDEF" for c in to_id))
 
 
-async def send_queue_drainer(companion, hub_id: str, hub_name: str, poll_sec: int = 3):
-    log.info(f"[send] outbound queue drainer up — polling mesh_send_queue every {poll_sec}s.")
+def _patch_pymc_ack_length() -> None:
+    """pymc_core's ACK handler rejects any ACK payload that isn't EXACTLY 4 bytes.
+    MeshCore nodes with extended/redundant ACKs send the 4-byte CRC plus trailing
+    metadata (e.g. a 6-byte ACK 'FEA6637F00A7' = CRC 7F63A6FE + 00A7), so a valid
+    delivery ACK gets dropped and every DM looks unacknowledged. Accept >=4 bytes and
+    use the first 4 (little-endian) as the CRC. Patched here (not in the vendored lib)
+    so it stays in our repo and survives a pymc_core reinstall."""
+    from pymc_core.node.handlers import ack as _ackmod
+
+    async def process_discrete_ack(self, packet):
+        payload = packet.payload
+        if len(payload) < 4:
+            self.log(f"Invalid ACK length: {len(payload)} bytes (need >=4)")
+            return None
+        crc = int.from_bytes(payload[:4], "little")
+        if len(payload) > 4:
+            self.log(f"Extended ACK {len(payload)}B -> CRC={crc:08X} "
+                     f"(trailing {payload[4:].hex().upper()})")
+        return crc
+
+    _ackmod.AckHandler.process_discrete_ack = process_discrete_ack
+    log.info("[patch] pymc_core AckHandler now accepts >=4-byte (extended) ACKs.")
+
+
+async def _wait_for_any_ack(disp, crcs: list, timeout: float) -> bool:
+    """Wait up to `timeout` for ANY of the given ack_crcs (each DM attempt has a fresh
+    crc; a late ACK for a prior attempt still counts as delivered)."""
+    if disp is None or not crcs:
+        return False
+    events = [disp.expect_ack(c) for c in crcs]     # fires instantly if already cached
+    tasks = [asyncio.ensure_future(e.wait()) for e in events]
+    try:
+        done, _ = await asyncio.wait(tasks, timeout=timeout,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        return bool(done)
+    finally:
+        for t in tasks:
+            t.cancel()
+
+
+async def send_queue_drainer(companion, hub_id: str, hub_name: str,
+                             scfg: dict | None = None, poll_sec: int = 3):
+    # DM retry (stock MeshCore auto-retries an unacked direct message; pymc_core does
+    # a single send, so we loop here). Channel/group sends are fire-and-forget flood
+    # (no ACK exists) and are never retried. attempt is incremented each pass so the
+    # receiver can dedup; back off a bit more before each retry.
+    scfg = scfg or {}
+    max_attempts = max(1, int(scfg.get("max_attempts", 3)))
+    retry_backoff = float(scfg.get("retry_backoff_sec", 3))
+    ack_timeout = float(scfg.get("ack_timeout_sec", 8))
+    # The dispatcher matches incoming ACKs on the content-derived ack_crc. pymc_core's
+    # own wait_for_ack (via send_text_message(wait_for_ack=True)) instead waits on the
+    # packet CRC, which never matches — so we send with its wait OFF and wait on
+    # res.expected_ack (the real ack_crc) through the dispatcher ourselves.
+    disp = getattr(getattr(companion, "node", None), "dispatcher", None)
+    log.info(f"[send] outbound queue drainer up — polling every {poll_sec}s "
+             f"(DM: up to {max_attempts} attempts, backoff {retry_backoff}s, "
+             f"ack wait {ack_timeout}s).")
     while True:
         try:
             con = sqlite3.connect(DB_PATH, timeout=10)
@@ -560,18 +623,38 @@ async def send_queue_drainer(companion, hub_id: str, hub_name: str, poll_sec: in
         for rid, to_id, to_name, ch_idx, ch_name, message, want_ack in rows:
             is_dm = _is_pubkey(to_id or "")
             status = "failed"
+            attempts_used = 0
             try:
                 if is_dm:
-                    res = await companion.send_text_message(
-                        bytes.fromhex(to_id), message, wait_for_ack=bool(want_ack))
-                    ok = bool(getattr(res, "success", False))
+                    pk = bytes.fromhex(to_id)
+                    sent_crcs = []   # every attempt's ack_crc (each send has a fresh crc)
+                    for attempt in range(1, max_attempts + 1):
+                        attempts_used = attempt
+                        # Hand off the packet (library ACK-wait disabled — it waits on the
+                        # wrong CRC), then wait on res.expected_ack via the dispatcher.
+                        res = await companion.send_text_message(
+                            pk, message, attempt=attempt, wait_for_ack=False)
+                        handoff = bool(getattr(res, "success", False))
+                        ack_crc = getattr(res, "expected_ack", None)
+                        if ack_crc is not None:
+                            sent_crcs.append(ack_crc)
+                        if not want_ack:
+                            acked = handoff            # fire-and-forget DM: no delivery wait
+                        else:
+                            acked = await _wait_for_any_ack(disp, sent_crcs, ack_timeout)
+                        if acked:
+                            status = "sent"
+                            break
+                        if attempt < max_attempts:
+                            log.info(f"[send] DM → {to_name or to_id[:12]}: no ACK "
+                                     f"(attempt {attempt}/{max_attempts}) — retrying")
+                            await asyncio.sleep(retry_backoff * attempt)
                     log.info(f"[send] DM → {to_name or to_id[:12]}: {message!r} -> "
-                             f"{'sent' if ok else 'failed'}")
+                             f"{status} after {attempts_used} attempt(s)")
                 else:
                     ok = await companion.send_channel_message(int(ch_idx or 0), message)
-                    log.info(f"[send] CH{ch_idx or 0} {ch_name or ''} → {message!r} -> "
-                             f"{'sent' if ok else 'failed'}")
-                status = "sent" if ok else "failed"
+                    status = "sent" if ok else "failed"
+                    log.info(f"[send] CH{ch_idx or 0} {ch_name or ''} → {message!r} -> {status}")
             except Exception as e:
                 log.error(f"[send] TX error (id={rid}): {e}", exc_info=True)
 
@@ -584,11 +667,15 @@ async def send_queue_drainer(companion, hub_id: str, hub_name: str, poll_sec: in
             except Exception as e:
                 log.error(f"[send] status write error (id={rid}): {e}")
 
-            if status == "sent":
-                write_message("tx", hub_id, hub_name,
-                              to_id if is_dm else None, to_name,
-                              int(ch_idx or 0), None if is_dm else ch_name,
-                              message, want_ack=int(bool(want_ack)))
+            # Record every attempt (sent OR failed) so the dashboard shows outcome.
+            # Channel rows use to_id '^all' so the UI renders the channel as recipient;
+            # DMs keep the contact pubkey. ack_received mirrors a successful DM ACK.
+            ack = 1 if (is_dm and status == "sent") else 0
+            write_message("tx", hub_id, hub_name,
+                          to_id if is_dm else "^all", to_name,
+                          int(ch_idx or 0), None if is_dm else ch_name,
+                          message, want_ack=int(bool(want_ack)),
+                          ack_received=ack, status=status)
         await asyncio.sleep(poll_sec)
 
 
@@ -603,6 +690,9 @@ async def run():
 
     from pymc_core.hardware.sx1262_wrapper import SX1262Radio
     from pymc_core.companion import CompanionRadio, CompanionFrameServer, ADV_TYPE_CHAT
+
+    # Tolerate extended (>4-byte) MeshCore ACKs before the radio comes up.
+    _patch_pymc_ack_length()
 
     r = mc["radio"]
     radio_kwargs = dict(
@@ -699,7 +789,7 @@ async def run():
         log.info(f"[telem] enabled — polling every {tcfg.get('interval_sec', 300)}s.")
 
     # 9.5) Outbound: drain the dashboard's mesh_send_queue over the radio (channel + DM).
-    asyncio.create_task(send_queue_drainer(companion, pubkey, node_name))
+    asyncio.create_task(send_queue_drainer(companion, pubkey, node_name, mc.get("send")))
 
     # 10) The hub is the dashboard's own self-marker (rendered from /api/status
     #     hub_position), NOT a mesh node — so we do not write it into the positions table.

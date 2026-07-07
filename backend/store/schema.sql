@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS mesh_messages (
     message       TEXT NOT NULL,
     want_ack      INTEGER DEFAULT 0,
     ack_received  INTEGER DEFAULT 0,
+    status        TEXT,               -- tx delivery status: 'sent' | 'failed' (NULL for rx)
     created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
     synced_to_hq  INTEGER DEFAULT 0
 );

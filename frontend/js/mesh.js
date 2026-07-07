@@ -14,6 +14,7 @@ let _allMessages    = [];
 let _channels       = [];
 let _nodeCache      = [];
 let _nameMap        = {};           // id → best known name (built from messages + nodeCache)
+let _hubName        = 'Hub';        // this hub's name — recipient shown for DMs sent TO us
 let _unread         = {};           // nodeId → unread count
 let _pollTimer      = null;
 let _composeMode    = 'direct';     // 'direct' | 'channel'
@@ -27,6 +28,9 @@ export function initMesh(map) {
   _map = map;
   _initModal();
   _initChatPanel();
+  // Learn this hub's name so DMs addressed to us show the hub as recipient, not '?'.
+  fetch('/jtak/api/status').then(r => r.json())
+    .then(s => { if (s && s.hub_name) _hubName = s.hub_name; }).catch(() => {});
   _loadChannels().then(() => _loadHistory().then(() => _startSSE()));
 
   // Compose trigger from sidebar chat-bubble clicks
@@ -450,25 +454,40 @@ function _appendToChatPanel(msg) {
 }
 
 function _makeMsgEl(msg) {
-  const isTx   = msg.direction === 'tx';
-  const from   = _esc(_resolveName(msg.from_id, msg.from_name));
-  const toDisp = msg.to_id === '^all'
-    ? (msg.channel_name ? `#${msg.channel_name}` : `CH${msg.channel_index ?? 0}`)
-    : _esc(_resolveName(msg.to_id, msg.to_name));
-  const ts = _fmtMsgTs(msg.timestamp);
+  const isTx     = msg.direction === 'tx';
+  const failed   = msg.status === 'failed';
+  // A channel message has no single node recipient — to_id '^all' (or a channel_name
+  // on older rows). Render the channel as the recipient; otherwise resolve the node.
+  const isChannel = msg.to_id === '^all' || (!!msg.channel_name && !_isPubkey(msg.to_id));
+  let toDisp;
+  if (isChannel) {
+    toDisp = msg.channel_name ? `#${_esc(msg.channel_name)}` : `CH${msg.channel_index ?? 0}`;
+  } else {
+    const n = _resolveName(msg.to_id, msg.to_name);
+    // DM addressed to us with no stored recipient -> the hub is the recipient.
+    toDisp = (n === '?' && !isTx) ? _esc(_hubName) : _esc(n);
+  }
+  const from = _esc(_resolveName(msg.from_id, msg.from_name));
+  const ts   = _fmtMsgTs(msg.timestamp);
 
   const div = document.createElement('div');
-  div.className = `mesh-msg${isTx ? ' tx' : ' rx'}`;
+  div.className = `mesh-msg${isTx ? ' tx' : ' rx'}${failed ? ' failed' : ''}`;
   div.innerHTML = `
     <div class="msg-header">
       <span class="msg-from">${from}</span>
       <span class="msg-arrow">→</span>
       <span class="msg-to">${toDisp}</span>
+      ${failed ? '<span class="msg-failed">⚠ not delivered</span>' : ''}
       <span class="msg-ts">${ts}</span>
     </div>
     <div class="msg-body">${_esc(msg.message)}</div>
   `;
   return div;
+}
+
+// True if the string looks like a MeshCore contact pubkey (64 hex chars).
+function _isPubkey(s) {
+  return typeof s === 'string' && /^[0-9a-fA-F]{64}$/.test(s);
 }
 
 // ── Util ──────────────────────────────────────────────────────────────────────

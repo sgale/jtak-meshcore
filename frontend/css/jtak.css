@@ -1812,6 +1812,19 @@ html[data-theme="day"] .popup-wfigs-link:hover { color: #003070; }
   padding-left: 9px;
 }
 .mesh-msg.rx { background: transparent; }
+.mesh-msg.failed {
+  background: rgba(231,76,60,0.12);
+  border-left: 3px solid rgba(231,76,60,0.7);
+  padding-left: 9px;
+}
+.mesh-msg.failed .msg-body { color: #ff9b8f; }
+.msg-failed {
+  color: #e74c3c;
+  font-weight: 700;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
 
 .msg-header {
   display: flex;
