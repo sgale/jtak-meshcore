@@ -25,6 +25,7 @@ venv that has pymc_core + pyserial).
 """
 import asyncio
 import csv
+import json
 import logging
 import os
 import sqlite3
@@ -48,8 +49,12 @@ SOURCE_TYPE = "meshcore"
 # RF-log columns csv_watcher reads by name; unlisted columns default to None there.
 # We append this same-format CSV so csv_watcher (in the API) owns the positions/
 # rf_metrics writes AND the live WS broadcast + LED + map — full Meshtastic parity.
+# The trailing telemetry columns (temp_c/humidity_pct/battery_pct) are ALSO read by
+# name in csv_watcher (node_sensors + WS temp fields), so hub-polled telemetry lights
+# up the dashboard's sensor/battery panels with no API or frontend changes.
 RF_CSV_COLUMNS = ["timestamp", "source_type", "node_id", "node_name", "hub_id",
-                  "node_lat", "node_lon", "rssi", "snr", "freq_mhz", "packet_type"]
+                  "node_lat", "node_lon", "rssi", "snr", "freq_mhz", "packet_type",
+                  "temp_c", "humidity_pct", "battery_pct"]
 
 
 def _cfg() -> dict:
@@ -120,7 +125,9 @@ def _fmt(v):
 
 def append_rf_row(node_id: str, node_name: str | None, hub_id: str,
                   lat: float | None, lon: float | None, rssi: float | None,
-                  snr: float | None, freq_mhz: float | None, packet_type: str | None) -> None:
+                  snr: float | None, freq_mhz: float | None, packet_type: str | None,
+                  temp_c: float | None = None, humidity_pct: float | None = None,
+                  battery_pct: float | None = None) -> None:
     """Append one observation to the MeshCore RF log; csv_watcher tails this to write
     positions + rf_metrics AND broadcast the live {type:'rf'} WS event (+ LED/map).
 
@@ -128,6 +135,9 @@ def append_rf_row(node_id: str, node_name: str | None, hub_id: str,
     invalid (~0/-1 dBm) while SNR is valid. A real received-packet RSSI is always well
     below -5 dBm, so anything above that is the hardware garbage value — write blank
     (→ NULL) rather than a misleading 0. SNR (the better LoRa link metric) is kept.
+
+    temp_c/humidity_pct/battery_pct come from hub-polled telemetry (packet_type
+    'telemetry'); they are blank for advert/text rows.
     """
     if rssi is not None and rssi > -5:
         rssi = None
@@ -141,12 +151,72 @@ def append_rf_row(node_id: str, node_name: str | None, hub_id: str,
         "hub_id": hub_id, "node_lat": _fmt(lat), "node_lon": _fmt(lon),
         "rssi": _fmt(rssi), "snr": _fmt(snr), "freq_mhz": _fmt(freq_mhz),
         "packet_type": packet_type or "",
+        "temp_c": _fmt(temp_c), "humidity_pct": _fmt(humidity_pct),
+        "battery_pct": _fmt(battery_pct),
     }
     with open(path, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=RF_CSV_COLUMNS)
         if new_file:
             w.writeheader()
         w.writerow(row)
+
+
+# ── Persistent contact book (survives restarts; keeps known nodes + their paths) ──
+# The dashboard NODES list is already persistent (it's in SQLite). What is NOT is the
+# MeshCore radio's contact book — the in-memory list of known nodes AND their routing
+# paths that DMs/telemetry need. Without persisting it, every restart forgets everyone
+# until they re-advert (why the first telemetry sweep found "no chat nodes"). We
+# serialize companion.contacts.to_dicts() (includes out_path) to JSON and reload it at
+# startup, so the hub comes back up already knowing its nodes — like the Meshtastic hubs.
+_contacts_dirty: "asyncio.Event | None" = None
+
+
+def _mark_contacts_dirty() -> None:
+    """Flag the contact book for a (debounced) save. Safe to call from any callback."""
+    if _contacts_dirty is not None:
+        _contacts_dirty.set()
+
+
+def load_contacts(companion, path: str) -> int:
+    """Restore the contact book from JSON at startup. Returns count loaded."""
+    if not os.path.exists(path):
+        return 0
+    try:
+        with open(path) as f:
+            records = json.load(f)
+    except Exception as e:
+        log.warning(f"[contacts] load failed ({path}): {e}")
+        return 0
+    if not isinstance(records, list) or not records:
+        return 0
+    companion.contacts.load_from_dicts(records)  # replaces all (store is empty at boot)
+    return len(records)
+
+
+def save_contacts(companion, path: str) -> int:
+    """Atomically write the current contact book (nodes + paths) to JSON."""
+    records = companion.contacts.to_dicts()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(records, f)
+    os.replace(tmp, path)  # atomic — never leaves a half-written file
+    return len(records)
+
+
+async def _contacts_flusher(companion, path: str, coalesce_sec: int = 5) -> None:
+    """Debounced saver: on the first change wait a beat to coalesce a burst of adverts,
+    then persist. Keeps disk writes bounded even if many nodes advert at once."""
+    assert _contacts_dirty is not None
+    while True:
+        await _contacts_dirty.wait()
+        await asyncio.sleep(coalesce_sec)
+        _contacts_dirty.clear()
+        try:
+            n = save_contacts(companion, path)
+            log.info(f"[contacts] saved {n} known node(s) -> {path}")
+        except Exception as e:
+            log.warning(f"[contacts] save failed: {e}")
 
 
 # ── GPS (ATGM336H on /dev/serial0) ──
@@ -222,6 +292,14 @@ def _make_ingest(hub_name: str, frequency: float):
                                   data.get("rssi"), data.get("snr"), freq_mhz, "advert")
                     loc = f"@ {lat:.5f},{lon:.5f}" if has_loc else "(no location)"
                     log.info(f"[advert] {name} {loc} ({pubkey[:8]}…)")
+                    # Remember the fine advert fix + when we heard it, so the telemetry
+                    # poll knows whether the advert pin is fresh (keep it) or stale (let
+                    # coarse telemetry GPS take over).
+                    if has_loc:
+                        _last_advert_pos[pubkey] = (time.time(), float(lat), float(lon))
+                    # The companion auto-added/updated this contact (+ maybe its path);
+                    # persist so it survives a restart.
+                    _mark_contacts_dirty()
 
                 elif et == MeshEvents.NEW_CHANNEL_MESSAGE:
                     ni = data.get("network_info") or {}
@@ -248,6 +326,148 @@ def _make_ingest(hub_name: str, frequency: float):
                 log.error(f"[ingest] {et} handler error: {e}", exc_info=True)
 
     return JtakIngest()
+
+
+def _lipo_pct(volts) -> float | None:
+    """Rough 1S-LiPo state-of-charge from pack voltage (3.30V≈0%, 4.20V≈100%).
+    Telemetry reports battery as VOLTAGE (LPP 0x74); the dashboard's battery field
+    wants a percent, so this is an approximation — good enough for a low/ok/full read,
+    not a fuel gauge. Clamped to 0–100."""
+    if volts is None:
+        return None
+    try:
+        v = float(volts)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    pct = (v - 3.30) / (4.20 - 3.30) * 100.0
+    return round(max(0.0, min(100.0, pct)), 0)
+
+
+# LPP type ids we care about (see pymc_core protocol_response decoder)
+_LPP_GPS, _LPP_TEMP, _LPP_HUMIDITY, _LPP_VOLTAGE = 0x88, 0x67, 0x68, 0x74
+
+# Last ADVERT position we heard per node (source_id -> (local_ts, lat, lon)). Adverts
+# carry ~0.1m GPS; telemetry carries ~11m CayenneLPP GPS that collapses nearby nodes
+# onto one pin. So the map pin comes from the advert, and telemetry only overrides it
+# when the advert is stale or the node has clearly moved (see telemetry_poll policy).
+_last_advert_pos: dict = {}
+
+
+def _dist_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres (haversine)."""
+    from math import radians, sin, cos, asin, sqrt
+    r = 6371000.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi, dlmb = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlmb / 2) ** 2
+    return 2 * r * asin(sqrt(a))
+
+
+async def telemetry_poll(companion, hub_name: str, freq_mhz: float, tcfg: dict):
+    """Periodically pull telemetry (GPS + environment + battery) from every discovered
+    CHAT node and feed it through the same RF-log producer as adverts, so positions,
+    sensor readings, and battery land on the live dashboard.
+
+    Cost note: each request is a DIRECT REQ→RESPONSE over LoRa (SF11 — slow), so we
+    space nodes out and let the operator pick the interval. Requires the remote node to
+    grant telemetry (and, for a fix, location) permission in its MeshCore app.
+    """
+    from pymc_core.companion import ADV_TYPE_CHAT
+
+    interval = tcfg.get("interval_sec", 300)
+    want_base = tcfg.get("want_base", True)
+    want_location = tcfg.get("want_location", True)
+    want_environment = tcfg.get("want_environment", True)
+    timeout = tcfg.get("request_timeout_sec", 12)
+    per_node_gap = tcfg.get("per_node_gap_sec", 3)
+    # Position policy: the fine advert pin wins unless it's older than this, or the
+    # coarse telemetry fix has moved more than this many metres from it.
+    pos_stale_sec = tcfg.get("position_stale_sec", 900)
+    move_threshold_m = tcfg.get("move_threshold_m", 25)
+    # Let contacts populate from adverts before the first sweep.
+    await asyncio.sleep(tcfg.get("startup_delay_sec", 60))
+    log.info(f"[telem] poll active — every {interval}s, all chat nodes "
+             f"(base={want_base} loc={want_location} env={want_environment}).")
+
+    while True:
+        try:
+            contacts = [c for c in companion.get_contacts() if c.adv_type == ADV_TYPE_CHAT]
+            if not contacts:
+                log.info("[telem] no chat nodes discovered yet — nothing to poll.")
+            for c in contacts:
+                pk = bytes(c.public_key)
+                name = c.name or pk.hex()[:8]
+                try:
+                    res = await companion.send_telemetry_request(
+                        pk, want_base=want_base, want_location=want_location,
+                        want_environment=want_environment, timeout=timeout)
+                except Exception as e:
+                    log.warning(f"[telem] {name}: request error: {e}")
+                    await asyncio.sleep(per_node_gap)
+                    continue
+                if not res.get("success"):
+                    log.info(f"[telem] {name}: no response ({res.get('reason')})")
+                    await asyncio.sleep(per_node_gap)
+                    continue
+
+                lat = lon = temp_c = humidity = batt = None
+                for s in (res.get("telemetry_data") or {}).get("sensors") or []:
+                    t, v = s.get("type_id"), s.get("value")
+                    if t == _LPP_GPS and isinstance(v, dict):
+                        lat, lon = v.get("latitude"), v.get("longitude")
+                    elif t == _LPP_TEMP:
+                        temp_c = v
+                    elif t == _LPP_HUMIDITY:
+                        humidity = v
+                    elif t == _LPP_VOLTAGE:
+                        batt = _lipo_pct(v)
+                # Drop a null-island fix (0,0) — means "no location grant/fix".
+                if lat in (0, 0.0) and lon in (0, 0.0):
+                    lat = lon = None
+
+                # Decide whether this coarse telemetry fix should update the map pin.
+                # Default: no (keep the finer advert pin). Override only if the advert is
+                # stale or the node has clearly moved — so co-located stationary nodes
+                # don't collapse onto one point at 11m resolution.
+                pos_lat = pos_lon = None
+                pos_note = "no gps"
+                if lat is not None:
+                    adv = _last_advert_pos.get(pk.hex())
+                    if adv is None:
+                        pos_lat, pos_lon, pos_note = lat, lon, "pos→telem (no advert)"
+                    else:
+                        adv_ts, adv_lat, adv_lon = adv
+                        age = time.time() - adv_ts
+                        moved = _dist_m(lat, lon, adv_lat, adv_lon)
+                        if age > pos_stale_sec:
+                            pos_lat, pos_lon, pos_note = lat, lon, f"pos→telem (advert {age/60:.0f}m old)"
+                        elif moved > move_threshold_m:
+                            pos_lat, pos_lon, pos_note = lat, lon, f"pos→telem (moved {moved:.0f}m)"
+                        else:
+                            pos_note = "pos held (advert)"
+
+                append_rf_row(pk.hex(), name, hub_name, pos_lat, pos_lon, None, None,
+                              freq_mhz, "telemetry", temp_c=temp_c,
+                              humidity_pct=humidity, battery_pct=batt)
+                bits = []
+                if lat is not None:
+                    bits.append(f"{lat:.5f},{lon:.5f} [{pos_note}]")
+                if temp_c is not None:
+                    bits.append(f"{temp_c:.1f}C")
+                if humidity is not None:
+                    bits.append(f"{humidity:.0f}%RH")
+                if batt is not None:
+                    bits.append(f"batt~{batt:.0f}%")
+                log.info(f"[telem] {name}: {' '.join(bits) or 'ok (no fields granted)'}")
+                await asyncio.sleep(per_node_gap)
+            # Requests may have refreshed routing paths — persist the latest.
+            if contacts:
+                _mark_contacts_dirty()
+        except Exception as e:
+            log.error(f"[telem] poll loop error: {e}", exc_info=True)
+        await asyncio.sleep(interval)
 
 
 async def run():
@@ -307,11 +527,33 @@ async def run():
         companion.set_advert_latlon(lat, lon)
         log.info(f"[gps] hub fix {lat:.6f},{lon:.6f} — adverts carry location.")
 
+    # 6.5) Restore the persistent contact book BEFORE start() so the hub comes back up
+    #      already knowing its nodes + paths (telemetry can poll them without re-adverts).
+    global _contacts_dirty
+    _contacts_dirty = asyncio.Event()
+    contacts_path = mc.get("contacts_file", "/home/sdg/pymc/hub_contacts.json")
+    restored = load_contacts(companion, contacts_path)
+    if restored:
+        log.info(f"[contacts] restored {restored} known node(s) from {contacts_path} "
+                 f"— telemetry can poll immediately, no re-advert needed.")
+        # Seed the advert-position cache from the restored fine GPS so the telemetry
+        # position policy holds the finer pin from the very first post-boot sweep
+        # (instead of falling back to coarse telemetry GPS).
+        for c in companion.get_contacts():
+            if c.gps_lat or c.gps_lon:
+                _last_advert_pos[c.public_key.hex()] = (time.time(), c.gps_lat, c.gps_lon)
+    else:
+        log.info(f"[contacts] none persisted yet — will learn + save nodes as they advert "
+                 f"({contacts_path}).")
+
     # 7) In-process jTAK ingest (coexists with the companion's phone-push subscriber)
     companion._event_service.subscribe_all(_make_ingest(hub_name, freq))
 
     await companion.start()
     log.info(f"[node] CompanionRadio started as {node_name!r} ({pubkey[:12]}…)")
+
+    # 7.5) Debounced saver: persists the contact book whenever it changes.
+    asyncio.create_task(_contacts_flusher(companion, contacts_path))
 
     # 8) Expose to the Android app over TCP
     cs = mc.get("companion_server") or {}
@@ -325,7 +567,13 @@ async def run():
         await server.start()
         log.info(f"[server] CompanionFrameServer LISTENING on {cs.get('bind','0.0.0.0')}:{cs.get('port',5000)}")
 
-    # 9) Record the hub's own position row, then periodic advert + GPS refresh
+    # 9) Optional: hub-driven telemetry poll (GPS + environment + battery per node)
+    tcfg = mc.get("telemetry") or {}
+    if tcfg.get("enabled", False):
+        asyncio.create_task(telemetry_poll(companion, hub_name, freq / 1e6, tcfg))
+        log.info(f"[telem] enabled — polling every {tcfg.get('interval_sec', 300)}s.")
+
+    # 10) Record the hub's own position row, then periodic advert + GPS refresh
     if lat is not None:
         write_position(pubkey, node_name, lat, lon)
 
@@ -338,10 +586,14 @@ async def run():
     try:
         while True:
             await asyncio.sleep(adv_interval)
-            # Occasionally refresh our GPS fix so a moving hub keeps its map pin current.
+            # Refresh our GPS fix so a moving hub keeps its map pin current and the next
+            # advert carries a fresh position. read_gps() blocks up to fix_timeout_sec on
+            # the serial port, so run it in a thread — otherwise it would stall the event
+            # loop (telemetry poll, phone frame server) for those seconds each cycle.
             if time.time() - last_gps >= gps_refresh:
-                nlat, nlon = read_gps(g.get("port", "/dev/serial0"), g.get("baud", 9600),
-                                      g.get("fix_timeout_sec", 12))
+                nlat, nlon = await asyncio.get_event_loop().run_in_executor(
+                    None, read_gps, g.get("port", "/dev/serial0"), g.get("baud", 9600),
+                    g.get("fix_timeout_sec", 12))
                 last_gps = time.time()
                 if nlat is not None:
                     companion.set_advert_latlon(nlat, nlon)
@@ -349,6 +601,11 @@ async def run():
             await companion.advertise(flood=True)
             log.info("[node] advert re-sent.")
     finally:
+        try:
+            n = save_contacts(companion, contacts_path)
+            log.info(f"[contacts] final save: {n} known node(s) -> {contacts_path}")
+        except Exception as e:
+            log.warning(f"[contacts] final save failed: {e}")
         if server:
             try:
                 await server.stop()

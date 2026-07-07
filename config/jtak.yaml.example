@@ -138,3 +138,65 @@ sounds:
   volume: 0.6
   waypoint: drop
 timezone: America/Denver
+# MeshCore LoRa ingest (see ingest/meshcore_monitor.py). Runs under the pymc venv.
+# NOTE: the real config/jtak.yaml is gitignored because it holds the channel secret;
+# this example documents every key with a REDACTED secret. Copy it over and fill in.
+meshcore:
+  enabled: true
+  node_name: jTAK-Hub
+  seed_file: /path/to/hub_identity.seed        # persistent Ed25519 identity seed (auto-created)
+  # Persistent contact book (known nodes + their routing paths) — reloaded on startup so
+  # the NODES list / telemetry targets survive a restart without waiting for re-adverts.
+  contacts_file: /path/to/hub_contacts.json
+  advert_interval_sec: 300                      # how often the hub broadcasts its presence/location
+  # Hub-driven telemetry poll: pull GPS + environment + battery from every discovered
+  # chat node on an interval and feed it to the dashboard (positions/sensors/battery).
+  # Each poll is a direct REQ->RESPONSE over LoRa SF11, so keep the interval sane.
+  telemetry:
+    enabled: true
+    interval_sec: 300          # seconds between full sweeps of all chat nodes
+    per_node_gap_sec: 3        # airtime-polite spacing between nodes in a sweep
+    request_timeout_sec: 12    # wait per node for the response
+    startup_delay_sec: 60      # let adverts populate contacts before first sweep
+    want_base: true            # battery/uptime
+    want_location: true        # onboard GPS fix (node must grant location)
+    want_environment: true     # temperature/humidity if the node has sensors
+    # Position policy: adverts (~0.1m GPS) drive the map pin; the coarse ~11m telemetry
+    # fix only overrides it if the advert is older than position_stale_sec OR the node
+    # has moved more than move_threshold_m — so stationary nearby nodes stay distinct.
+    position_stale_sec: 900    # seconds without an advert -> trust telemetry GPS
+    move_threshold_m: 25       # or a telemetry fix >Nm from last advert -> node moved
+  gps:
+    port: /dev/serial0
+    baud: 9600
+    fix_timeout_sec: 12
+    # Re-read the hub's own fix this often. Match to advert_interval_sec so every advert
+    # carries a fresh position (a mobile hub stays current on field radios' maps). Raise
+    # it if the hub is a fixed base station to save power.
+    refresh_sec: 300
+  radio:
+    frequency: 910525000       # US MeshCore preset — match your region + all field nodes
+    bandwidth: 250000
+    spreading_factor: 11
+    coding_rate: 5
+    tx_power: 22
+    preamble_length: 17
+    bus_id: 0
+    cs_id: 0
+    cs_pin: 21
+    reset_pin: 18
+    busy_pin: 20
+    irq_pin: 16
+    txen_pin: 13
+    rxen_pin: 12
+    is_waveshare: true
+    use_dio3_tcxo: true        # E22/MeshAdv HAT needs the TCXO
+    dio3_tcxo_voltage: 1.8
+  companion_server:
+    enabled: true              # TCP server the Android MeshCore app connects to
+    bind: 0.0.0.0
+    port: 5000
+  channels:
+  - index: 0
+    name: jTAK Private
+    secret: "<REDACTED-32-hex-channel-secret>"  # real value lives ONLY in gitignored jtak.yaml
