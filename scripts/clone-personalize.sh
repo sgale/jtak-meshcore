@@ -70,7 +70,11 @@ LOG_DIR="$(val base_path)";        LOG_DIR="${LOG_DIR:-/opt/jtak/logs/rf}"
 GPS_STATUS=/opt/jtak/data/meshcore-gps.json
 HQ_WM=/opt/jtak/data/hq_watermarks.json
 OLD_NAME="$(val node_name)"; [ -n "$OLD_NAME" ] || die "could not read current node_name from $YAML"
+OLD_HOST="$(hostname)"
 SECRET_BEFORE="$(grep -c "secret:" "$YAML" || true)"
+NGINX_BLOCK=/etc/nginx/sites-enabled/jtak-local
+TLS_CRT=/etc/nginx/mcore-local.crt
+TLS_KEY=/etc/nginx/mcore-local.key
 
 cat <<EOF
 
@@ -81,8 +85,10 @@ cat <<EOF
   guid / hub_id ..... $GUID / $HUB_ID   (jtak.identity.yaml)
   new mesh identity . delete $SEED_FILE  -> fresh Ed25519 key on restart
   host identity ..... regenerate SSH host keys + machine-id
+  local https ....... nginx server_name + TLS cert -> ${HOST}.local$([ -f "$NGINX_BLOCK" ] || echo "  (skip: no jtak-local block)")
   wipe learned ...... contacts, gps-status, hq watermarks$([ $KEEP_DB -eq 0 ] && echo ", jtak.db, RF logs")
   KEEP (shared) ..... channel secret, radio config, hq url
+  N/A here .......... ZeroTier, WiFi-AP SSID/DNS, bakeoff tags (Meshtastic-only)
 EOF
 
 if [ "$ASSUME_YES" -ne 1 ]; then
@@ -125,19 +131,36 @@ else
   echo "    kept jtak.db + RF logs (--keep-db)"
 fi
 
-echo "==> setting hostname ($HOST)"
+echo "==> setting hostname ($HOST) + .local alias"
 hostnamectl set-hostname "$HOST"
-if grep -qE '^\s*127\.0\.1\.1\s' /etc/hosts; then
-  sed -i -E "s|^(\s*127\.0\.1\.1\s+).*|\1$HOST|" /etc/hosts
-else
-  echo "127.0.1.1	$HOST" >> /etc/hosts
-fi
+sed -i '/^127\.0\.1\.1/d' /etc/hosts
+echo "127.0.1.1	$HOST $HOST.local" >> /etc/hosts
 
 echo "==> regenerating SSH host keys + machine-id (network-distinct from the source)"
 rm -f /etc/ssh/ssh_host_*  && ssh-keygen -A >/dev/null
+systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup >/dev/null
 [ -d /var/lib/dbus ] && ln -sf /etc/machine-id /var/lib/dbus/machine-id || true
+
+# ── Local (.local) HTTPS access: nginx server_name + self-signed cert ──────────
+# The jtak-local block hardcodes '<host>.local' (x2) and a self-signed cert with
+# CN=<host>.local — both stale on a clone. Retarget the block and reissue the cert
+# under the SAME filenames the block references.
+if [ -f "$NGINX_BLOCK" ] && command -v nginx >/dev/null; then
+  echo "==> retargeting nginx local access ${OLD_HOST}.local -> ${HOST}.local"
+  cp -a "$NGINX_BLOCK" "$NGINX_BLOCK.bak.$(date +%s)"
+  sed -i "s|${OLD_HOST}\.local|${HOST}.local|g" "$NGINX_BLOCK"
+  if [ -f "$TLS_CRT" ] && command -v openssl >/dev/null; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout "$TLS_KEY" -out "$TLS_CRT" \
+      -subj "/CN=${HOST}.local" -addext "subjectAltName=DNS:${HOST}.local" >/dev/null 2>&1 \
+      && { chmod 600 "$TLS_KEY"; chmod 644 "$TLS_CRT"; echo "    reissued TLS cert CN=${HOST}.local"; } \
+      || echo "    WARNING: cert reissue failed — check openssl"
+  fi
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx && echo "    nginx reloaded" \
+    || echo "    WARNING: nginx -t failed — check $NGINX_BLOCK"
+fi
 
 echo "==> starting services"
 systemctl daemon-reload
@@ -164,5 +187,6 @@ cat <<EOF
    • Verify on the dashboard: header shows $NAME, NODES list is clean.
    • SSH host key changed — clear the old entry on your client if it warns:
        ssh-keygen -R $HOST   (and/or the hub's IP)
+   • https://${HOST}.local uses a fresh self-signed cert — re-accept it in the browser.
    • A reboot is recommended so the new hostname/machine-id fully settle.
 EOF
