@@ -238,8 +238,8 @@ def read_gps(port: str, baud: int, dur: int):
     """Parse NMEA for up to `dur`s. Returns (lat, lon, sats, hdop).
 
     GGA carries fix quality + satellites-used (field 7) + HDOP (field 8); RMC carries
-    position but no sat count. We keep reading until we have both a fix and a sat count
-    (a full GGA) so the header gets a real satellite number, not just lat/lon.
+    position but no sat count. We sample the full window and return the BEST (lowest-HDOP)
+    GGA seen so a momentary spike doesn't flip the header/LED; lat/lon track the latest fix.
     lat/lon are None until a fix; sats/hdop may be present even without one.
     """
     lat = lon = sats = hdop = None
@@ -249,6 +249,11 @@ def read_gps(port: str, baud: int, dur: int):
     except Exception as e:
         log.warning(f"[gps] open failed: {e}")
         return None, None, None, None
+    # Sample the WHOLE window and keep the BEST fix (lowest HDOP + its sat count) instead
+    # of bailing on the first GGA: a single instantaneous reading catches momentary HDOP
+    # spikes (a satellite dropping out) that then paint the header/LED "fair/poor" for the
+    # entire poll interval even when the fix is steady. Best-of-window matches how a
+    # continuous tracker (gpsd on the other hubs) presents a stable lock.
     t0 = time.time()
     try:
         while time.time() - t0 < dur:
@@ -257,23 +262,28 @@ def read_gps(port: str, baud: int, dur: int):
             typ = raw[3:6]
             if typ == "GGA" and len(f) > 8:
                 # $..GGA,time,lat,N,lon,E,fixQ,numSat,HDOP,alt,...
+                g_sats = g_hdop = None
                 if f[7]:
                     try:
-                        sats = int(f[7])
+                        g_sats = int(f[7])
                     except ValueError:
                         pass
                 if f[8]:
                     try:
-                        hdop = float(f[8])
+                        g_hdop = float(f[8])
                     except ValueError:
                         pass
                 if f[6] not in ("", "0") and f[2]:
                     lat, lon = _nmea_to_deg(f[2], f[3]), _nmea_to_deg(f[4], f[5])
+                # Keep the lowest-HDOP sample of the window (and the sats it saw).
+                if g_hdop is not None and (hdop is None or g_hdop < hdop):
+                    hdop = g_hdop
+                    if g_sats is not None:
+                        sats = g_sats
+                elif sats is None and g_sats is not None:
+                    sats = g_sats
             elif typ == "RMC" and len(f) > 6 and f[2] == "A" and f[3] and lat is None:
                 lat, lon = _nmea_to_deg(f[3], f[4]), _nmea_to_deg(f[5], f[6])
-            # Once we have a fix AND a sat count, we've read a full GGA — done.
-            if lat is not None and sats is not None:
-                break
     finally:
         ser.close()
     return lat, lon, sats, hdop
